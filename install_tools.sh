@@ -7,7 +7,9 @@ set -u
 echo "==> apt packages"
 sudo apt-get update
 sudo apt-get install -y \
-  curl git jq python3 python3-venv python3-pip nodejs npm build-essential
+  curl git jq python3 python3-venv python3-pip python3-dev nodejs npm build-essential
+# pipx (isolated installs for the CLI security tools). Best-effort across distros.
+sudo apt-get install -y pipx 2>/dev/null || python3 -m pip install --user -q pipx || true
 
 echo "==> Foundry (forge / cast / anvil)"
 if ! command -v foundryup >/dev/null 2>&1; then
@@ -24,16 +26,24 @@ python3 -m venv venv
 source venv/bin/activate
 pip install --upgrade pip
 
-echo "==> Backend Python deps"
+echo "==> Backend Python deps (core only — no security tools in this venv)"
 pip install -r requirements.txt || {
   echo "WARN: some pip installs failed; retrying core deps"
-  pip install fastapi uvicorn sqlalchemy pydantic pydantic-settings python-dotenv \
-    aiofiles httpx web3 eth-utils requests pandas
+  pip install fastapi "uvicorn[standard]" sqlalchemy pydantic pydantic-settings \
+    python-dotenv aiofiles httpx web3 eth-utils eth-abi requests pandas
 }
 
-echo "==> Security tools (slither / mythril / semgrep / solc-select)"
-pip install slither-analyzer mythril semgrep solc-select || \
-  echo "WARN: one or more security tools failed to install; see README for manual steps."
+echo "==> Security tools via pipx (isolated — avoids the web3/mythril conflict)"
+# pipx installs each CLI in its own venv, so their (conflicting) deps never touch
+# the app venv. The app calls these as subprocesses on PATH.
+export PATH="$HOME/.local/bin:$PATH"
+python3 -m pipx ensurepath >/dev/null 2>&1 || pipx ensurepath >/dev/null 2>&1 || true
+PIPX="python3 -m pipx"; command -v pipx >/dev/null 2>&1 && PIPX="pipx"
+for tool in slither-analyzer semgrep solc-select mythril; do
+  echo "  - pipx install $tool"
+  $PIPX install "$tool" \
+    || echo "    WARN: $tool failed to install (mythril is finicky; the app still runs and marks it missing on Tool Health)."
+done
 
 # A common default solc; adjust per target contract.
 solc-select install 0.8.19 2>/dev/null && solc-select use 0.8.19 2>/dev/null || true

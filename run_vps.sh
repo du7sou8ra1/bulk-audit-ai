@@ -11,7 +11,11 @@ cd "$(dirname "$0")"
 PORT="${PORT:-8791}"
 HOST="${HOST:-0.0.0.0}"
 
-# 1) Python venv + deps
+# Make pipx-installed tools (slither/mythril/semgrep/solc-select) and Foundry
+# (forge/cast/anvil) visible to the backend's subprocess calls.
+export PATH="$HOME/.local/bin:$HOME/.foundry/bin:$PATH"
+
+# 1) Python venv + CORE deps (security tools live in pipx, not here)
 if [ ! -d venv ]; then
   python3 -m venv venv
 fi

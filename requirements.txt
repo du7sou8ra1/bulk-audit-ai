@@ -1,4 +1,10 @@
-# BulkAuditAI backend dependencies
+# BulkAuditAI backend — CORE runtime dependencies only.
+#
+# The security analyzers (slither, mythril, semgrep, solc-select) are NOT here:
+# they are CLI tools invoked as subprocesses, and mythril's pins conflict with
+# web3 (eth-hash). Install them in isolated environments with pipx instead —
+# see install_tools.sh / README. The app runs fine without them (Tool Health
+# just marks them missing and scans record a skipped tool step).
 fastapi>=0.110
 uvicorn[standard]>=0.27
 sqlalchemy>=2.0
@@ -9,15 +15,9 @@ aiofiles>=23.2
 httpx>=0.27
 web3>=6.15
 eth-utils>=4.0
+eth-abi>=4.0
 requests>=2.31
 pandas>=2.1
-
-# Security tools (installed in the venv; may also be installed system-wide).
-# These are optional at runtime — the app degrades gracefully if missing.
-slither-analyzer>=0.10
-mythril>=0.24
-semgrep>=1.60
-solc-select>=1.0
 
 # Dev / tests
 pytest>=8.0

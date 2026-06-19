@@ -74,13 +74,19 @@ copy .env.example .env
 
 ### Manual tool install (if the script fails)
 
+Install the analyzers with **pipx** (each in its own venv — this avoids the
+`web3`/`mythril` dependency conflict; never `pip install` them into the app venv):
+
 | Tool | Install |
 |------|---------|
-| Slither | `pip install slither-analyzer` |
-| Mythril | `pip install mythril` |
-| Semgrep | `pip install semgrep` |
-| solc-select | `pip install solc-select` then `solc-select install 0.8.19` |
+| pipx | `sudo apt-get install -y pipx` (or `python3 -m pip install --user pipx`) |
+| Slither | `pipx install slither-analyzer` |
+| Semgrep | `pipx install semgrep` |
+| solc-select | `pipx install solc-select` then `solc-select install 0.8.19 && solc-select use 0.8.19` |
+| Mythril | `pipx install mythril` (finicky — OK to skip; app marks it missing) |
 | Foundry | `curl -L https://foundry.paradigm.xyz \| bash && foundryup` |
+
+After pipx installs, make sure `~/.local/bin` is on your `PATH` (`pipx ensurepath`).
 | Echidna (optional) | see https://github.com/crytic/echidna (binary release) |
 
 ---
