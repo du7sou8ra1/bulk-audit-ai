@@ -91,12 +91,30 @@ class ScanManager:
         self._tasks: dict[int, asyncio.Task] = {}
         self._cancelled: set[int] = set()
         self._scan_sema = asyncio.Semaphore(get_settings().max_parallel_scans)
+        self._loop: asyncio.AbstractEventLoop | None = None
+
+    def set_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Capture the main event loop at startup so SYNC FastAPI endpoints (which
+        run in a threadpool, with no running loop) can still schedule scans."""
+        self._loop = loop
 
     def start_scan(self, scan_id: int) -> None:
         if scan_id in self._tasks and not self._tasks[scan_id].done():
             return
         self._cancelled.discard(scan_id)
-        self._tasks[scan_id] = asyncio.create_task(self._run_scan(scan_id))
+
+        def _spawn() -> None:
+            self._tasks[scan_id] = asyncio.create_task(self._run_scan(scan_id))
+
+        try:
+            asyncio.get_running_loop()  # we're already on the event-loop thread
+        except RuntimeError:
+            # called from a worker thread (sync endpoint) -> schedule on main loop
+            if self._loop is None:
+                raise RuntimeError("scan manager event loop not set")
+            self._loop.call_soon_threadsafe(_spawn)
+        else:
+            _spawn()
 
     def cancel_scan(self, scan_id: int) -> None:
         self._cancelled.add(scan_id)

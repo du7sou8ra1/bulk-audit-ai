@@ -25,6 +25,10 @@ from .database import SessionLocal, init_db
 async def _lifespan(app: FastAPI):
     init_db()
     _recover_interrupted_scans()
+    # Capture the running loop so SYNC endpoints (run in a threadpool) can schedule
+    # scans onto it — fixes "no running event loop" on POST /api/scans.
+    from .core.scanner import manager
+    manager.set_loop(asyncio.get_running_loop())
     # Start the "before-drain" monitor if enabled (watches upgrades/codehash changes).
     if get_settings().enable_monitor:
         from .core.monitor import monitor
