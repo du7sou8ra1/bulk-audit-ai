@@ -69,6 +69,11 @@ _PROFILE_MAP: dict[str, list[type[Detector]]] = {
 }
 
 
+# Public, single source of truth for valid profile names (the API schema imports
+# this so it can never drift from the registry again).
+PROFILE_NAMES: list[str] = list(_PROFILE_MAP.keys())
+
+
 def get_detectors(profile: str) -> list[Detector]:
     classes = _PROFILE_MAP.get(profile, MVP_DETECTORS)
     seen: set[type[Detector]] = set()

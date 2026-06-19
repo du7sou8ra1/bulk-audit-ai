@@ -9,15 +9,15 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 # --------------------------------------------------------------------------- #
 # Requests
 # --------------------------------------------------------------------------- #
-SCAN_PROFILES = [
-    "quick",
-    "standard",
-    "deep",
-    "governance-focused",
-    "zk-focused",
-    "privacy-pool-focused",
-    "bridge-focused",
-]
+# Valid profiles come straight from the detector registry (single source of
+# truth) so the API and the registry can never disagree.
+try:
+    from .detectors.registry import PROFILE_NAMES as SCAN_PROFILES
+except Exception:  # pragma: no cover - defensive fallback
+    SCAN_PROFILES = [
+        "quick", "standard", "deep", "defi-deep", "oracle-focused",
+        "governance-focused", "zk-focused", "privacy-pool-focused", "bridge-focused",
+    ]
 
 
 class ScanToggles(BaseModel):
