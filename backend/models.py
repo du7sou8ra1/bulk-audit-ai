@@ -201,3 +201,94 @@ class AIReview(Base):
     rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
     recommended_next_steps: Mapped[list] = mapped_column(JSON, default=list)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
+
+
+# --------------------------------------------------------------------------- #
+# Monitoring ("before-drain"): a watchlist + the change events that auto-trigger
+# a rescan. New tables only — create_all adds them, no migration needed.
+# --------------------------------------------------------------------------- #
+class WatchKind:
+    UPGRADE = "implementation_upgrade"      # EIP-1967 impl slot changed (highest signal)
+    CODEHASH_CHANGE = "codehash_change"     # the address's own bytecode changed
+    ADMIN_CHANGE = "admin_change"
+    OWNER_CHANGE = "owner_change"
+    CHECK_ERROR = "check_error"
+    CRITICAL_ALERT = "critical_alert"       # a rescan produced a CONFIRMED_CRITICAL
+    NEW_DEPLOY = "new_deployment"           # a watched deployer shipped a new contract
+
+
+class WatchTarget(Base):
+    __tablename__ = "watch_targets"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    address: Mapped[str] = mapped_column(String(42), index=True)
+    chain: Mapped[str] = mapped_column(String(32), default="ethereum")
+    label: Mapped[str] = mapped_column(String(255), default="")
+    github_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    enabled: Mapped[bool] = mapped_column(default=True)
+    scan_profile: Mapped[str] = mapped_column(String(32), default="defi-deep")
+    interval_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # last-known on-chain state (the diff baseline)
+    impl_address: Mapped[str | None] = mapped_column(String(42), nullable=True)
+    codehash: Mapped[str | None] = mapped_column(String(66), nullable=True)
+    admin: Mapped[str | None] = mapped_column(String(42), nullable=True)
+    owner: Mapped[str | None] = mapped_column(String(42), nullable=True)
+
+    last_checked_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    last_change_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    last_scan_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
+
+    events: Mapped[list["WatchEvent"]] = relationship(
+        back_populates="watch_target", cascade="all, delete-orphan"
+    )
+
+
+class WatchEvent(Base):
+    __tablename__ = "watch_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    watch_target_id: Mapped[int] = mapped_column(ForeignKey("watch_targets.id"))
+    kind: Mapped[str] = mapped_column(String(48))
+    detail: Mapped[dict] = mapped_column(JSON, default=dict)
+    scan_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
+
+    watch_target: Mapped["WatchTarget"] = relationship(back_populates="events")
+
+
+class DeployerWatch(Base):
+    """Watch a DEPLOYER address — auto-onboard + scan each new contract it ships.
+
+    Extends 'before-drain' from upgrades of known contracts to fresh launches.
+    """
+    __tablename__ = "deployer_watches"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    deployer_address: Mapped[str] = mapped_column(String(42), index=True)
+    chain: Mapped[str] = mapped_column(String(32), default="ethereum")
+    label: Mapped[str] = mapped_column(String(255), default="")
+    enabled: Mapped[bool] = mapped_column(default=True)
+    scan_profile: Mapped[str] = mapped_column(String(32), default="defi-deep")
+    interval_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    last_block_checked: Mapped[int] = mapped_column(Integer, default=0)
+    deployed_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_checked_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class SuppressedFinding(Base):
+    """A finding fingerprint the user marked false-positive / known — future scans
+    auto-downgrade matching candidates (dedup + FP-learning at bulk scale)."""
+    __tablename__ = "suppressed_findings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    fingerprint: Mapped[str] = mapped_column(String(64), index=True)
+    # null address => global suppression; else scoped to that contract.
+    address: Mapped[str | None] = mapped_column(String(42), nullable=True)
+    detector: Mapped[str] = mapped_column(String(64), default="")
+    title: Mapped[str] = mapped_column(String(512), default="")
+    reason: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)

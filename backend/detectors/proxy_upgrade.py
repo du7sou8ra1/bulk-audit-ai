@@ -30,6 +30,17 @@ class ProxyUpgradeDetector(Detector):
         findings: list[FindingCandidate] = []
         proxy = ctx.proxy_info
 
+        # Classify the controlling admin on-chain (Wasabi/Drift signal): EOA vs
+        # multisig vs timelock. An EOA admin over an upgrade path is high-risk.
+        admin_addr = proxy.admin_owner or proxy.owner or proxy.admin
+        admin_class: dict = {}
+        try:
+            if ctx.onchain is not None and admin_addr:
+                admin_class = ctx.onchain.classify_admin(admin_addr)
+        except Exception:  # pragma: no cover - defensive
+            admin_class = {}
+        admin_is_eoa = admin_class.get("kind") == "eoa"
+
         for fn in ctx.functions():
             if fn.name not in UPGRADE_FUNCS:
                 continue
@@ -58,21 +69,41 @@ class ProxyUpgradeDetector(Detector):
             ]
 
             if guarded:
-                # Governance power by design unless owner/admin is unexpected.
+                eoa_risk = admin_is_eoa and is_code_upgrade
                 findings.append(
                     FindingCandidate(
                         detector=self.name,
-                        title=f"Upgrade/ownership function guarded by access control: {fn.name}",
+                        title=(
+                            f"Upgrade function controlled by a single EOA admin: {fn.name}"
+                            if eoa_risk
+                            else f"Upgrade/ownership function guarded by access control: {fn.name}"
+                        ),
                         description=(
-                            f"`{fn.name}` is {fn.visibility} but carries an access-control "
-                            f"modifier ({', '.join(fn.modifiers) or 'modifier present'}). "
-                            "This is governance/admin power, not necessarily a bug. Verify "
-                            "the controlling owner/admin is the expected timelock/multisig."
+                            (
+                                f"`{fn.name}` is guarded, but the controlling admin "
+                                f"({admin_addr}) is an externally-owned account (EOA) — not a "
+                                "multisig or timelock. A single key compromise enables an instant "
+                                "malicious upgrade and full drain (the Wasabi class)."
+                            )
+                            if eoa_risk
+                            else (
+                                f"`{fn.name}` is {fn.visibility} but carries an access-control "
+                                f"modifier ({', '.join(fn.modifiers) or 'modifier present'}). "
+                                "Governance/admin power, not necessarily a bug. The controlling "
+                                f"admin classified on-chain as: {admin_class.get('kind', 'unknown')}."
+                            )
                         ),
                         impact_score=float(base_impact),
-                        confidence_score=2.0,
-                        severity_candidate="low",
-                        evidence=evidence,
+                        confidence_score=6.0 if eoa_risk else 2.0,
+                        severity_candidate="critical" if eoa_risk else "low",
+                        evidence={
+                            **evidence,
+                            "admin_classification": admin_class,
+                            # EOA admin is a real centralization risk -> don't -3 it.
+                            "governance_controlled": not eoa_risk,
+                            "documented_centralization": not eoa_risk,
+                            "bug_class": "access_control",
+                        },
                         next_tests=next_tests,
                         affected_functions=[fn.name],
                     )

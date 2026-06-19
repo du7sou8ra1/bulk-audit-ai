@@ -262,3 +262,94 @@ def generate_and_run(
         "runner": runner,
         "note": note,
     }
+
+
+# --------------------------------------------------------------------------- #
+# State-invariant PoC scaffold (gap #2)
+# --------------------------------------------------------------------------- #
+# Most real criticals (accounting, settlement binding, rounding, double-spend)
+# are NOT "unguarded selector" bugs — they need a MULTI-STEP state PoC that
+# asserts an invariant break (attacker gained value without equivalent deposit).
+# Auto-generating a *correct* exploit is protocol-specific and hard, so for these
+# bug classes we emit a compiling SCAFFOLD with the setup/attack/assert skeleton
+# and TODO markers — far more actionable than the call-succeeds PoC, and honest
+# (it is written to evidence, never counted as a passing PoC).
+_STATE_INVARIANT_CLASSES = {
+    "share_accounting", "settlement_binding", "replay", "decimal", "oracle", "reentrancy",
+}
+
+
+def is_state_invariant_finding(candidate: FindingCandidate) -> bool:
+    ev = candidate.evidence or {}
+    return str(ev.get("bug_class", "")) in _STATE_INVARIANT_CLASSES
+
+
+def build_state_invariant_scaffold(
+    target_address: str, fn_name: str | None, bug_class: str
+) -> str:
+    fn = fn_name or "targetFunction"
+    return f"""// SPDX-License-Identifier: MIT
+// AUTO-GENERATED STATE-INVARIANT PoC *SCAFFOLD* — bug class: {bug_class}
+// Runs only on a local fork. DO NOT BROADCAST. This is a SKELETON: complete the
+// three TODO blocks. It is NOT counted as a passing PoC until you make the
+// invariant assertion hold against the real exploit.
+pragma solidity ^0.8.19;
+
+interface Vm {{
+    function prank(address) external;
+    function deal(address, uint256) external;
+    function store(address, bytes32, bytes32) external;
+    function load(address, bytes32) external view returns (bytes32);
+    function createSelectFork(string calldata) external returns (uint256);
+}}
+interface ITarget {{
+    // TODO: declare the functions you need, e.g.:
+    // function {fn}(/* args */) external;
+    // function balanceOf(address) external view returns (uint256);
+    // function totalAssets() external view returns (uint256);
+}}
+
+contract StateInvariantPoc {{
+    Vm internal constant vm = Vm(0x7109709ECfa91a80626fF3989D68f67F5b1DD12D);
+    address internal constant TARGET = {target_address};
+    address internal constant ATTACKER = address(uint160(0xA11CE));
+
+    function test_invariant_break_{fn}() external {{
+        // 1) SETUP — seed attacker balances / approvals on the fork.
+        vm.deal(ATTACKER, 100 ether);
+        // TODO: vm.store(TARGET, <slot>, <value>) or deposit to reach a realistic state.
+        uint256 before = _attackerValue();
+
+        // 2) ATTACK — perform the candidate exploit as ATTACKER.
+        vm.prank(ATTACKER);
+        // TODO: ITarget(TARGET).{fn}(/* crafted args */);
+
+        // 3) ASSERT THE INVARIANT BREAK — gained value with no equivalent input.
+        uint256 afterv = _attackerValue();
+        require(afterv > before, "no value extracted - candidate likely safe");
+        // For accounting bugs also assert protocol solvency broke, e.g.:
+        // require(ITarget(TARGET).totalAssets() < realBackedValue, "accounting intact");
+    }}
+
+    function _attackerValue() internal view returns (uint256) {{
+        // TODO: sum the assets the attacker can redeem/withdraw.
+        return ATTACKER.balance;
+    }}
+}}
+"""
+
+
+def write_state_scaffold(
+    ctx: TargetContext, candidate: FindingCandidate, foundry_dir: Path
+) -> dict:
+    """Write a compiling state-invariant PoC scaffold to the workspace (not run)."""
+    fn = (candidate.affected_functions or [None])[0]
+    bug_class = str((candidate.evidence or {}).get("bug_class", "accounting"))
+    src = build_state_invariant_scaffold(ctx.address, fn, bug_class)
+    (foundry_dir / "test").mkdir(parents=True, exist_ok=True)
+    (foundry_dir / "src").mkdir(parents=True, exist_ok=True)
+    (foundry_dir / "foundry.toml").write_text(_foundry_toml(), encoding="utf-8")
+    path = foundry_dir / "test" / "StateInvariantPoc.t.sol"
+    path.write_text(src, encoding="utf-8")
+    return {"scaffold": True, "path": str(path), "bug_class": bug_class,
+            "note": "state-invariant PoC scaffold written — complete the TODO blocks to confirm"}

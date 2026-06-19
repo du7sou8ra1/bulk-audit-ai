@@ -188,6 +188,165 @@ def fetch_etherscan_abi(address: str, chain: str = "ethereum") -> list | dict | 
         return None
 
 
+def fetch_deployer_creations(
+    deployer: str, chain: str = "ethereum", start_block: int = 0
+) -> list[tuple[str, int]]:
+    """Contracts created by ``deployer`` since ``start_block``.
+
+    Returns [(contract_address_lowercase, block_number)] sorted by block. Covers
+    both direct deploys (normal txlist, ``to`` empty) and factory/internal deploys
+    (txlistinternal, ``type`` == create). Used by the new-deployment watcher.
+    """
+    found: dict[str, int] = {}
+
+    direct = _etherscan_get({
+        "module": "account", "action": "txlist", "address": deployer,
+        "startblock": start_block, "endblock": 99999999, "sort": "asc", "chain": chain,
+    })
+    for t in (direct or {}).get("result") or []:
+        if not isinstance(t, dict):
+            continue
+        addr = t.get("contractAddress") or ""
+        if t.get("to") in ("", None) and addr and addr != "0x":
+            try:
+                if int(addr, 16) != 0:
+                    found[addr.lower()] = int(t.get("blockNumber") or 0)
+            except ValueError:
+                pass
+
+    internal = _etherscan_get({
+        "module": "account", "action": "txlistinternal", "address": deployer,
+        "startblock": start_block, "endblock": 99999999, "sort": "asc", "chain": chain,
+    })
+    for t in (internal or {}).get("result") or []:
+        if not isinstance(t, dict):
+            continue
+        addr = t.get("contractAddress") or ""
+        if str(t.get("type", "")).startswith("create") and addr:
+            try:
+                if int(addr, 16) != 0:
+                    found.setdefault(addr.lower(), int(t.get("blockNumber") or 0))
+            except ValueError:
+                pass
+
+    return sorted(found.items(), key=lambda kv: kv[1])
+
+
+# --------------------------------------------------------------------------- #
+# Sourcify fallback (gap #8) — keyless, verified-source mirror. Used when
+# Etherscan is unverified / errored / rate-limited.
+# --------------------------------------------------------------------------- #
+_SOURCIFY_SERVER = "https://sourcify.dev/server"
+
+
+def fetch_sourcify_source(address: str, chain: str = "ethereum") -> SourcePackage | None:
+    pkg = SourcePackage(address=address)
+    chain_id = get_settings().etherscan_chain_id(chain)  # same numeric ids
+    try:
+        resp = requests.get(
+            f"{_SOURCIFY_SERVER}/files/any/{chain_id}/{address}", timeout=30
+        )
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+    except Exception as exc:  # noqa: BLE001
+        logger.info("sourcify fetch failed for %s: %s", address, exc)
+        return None
+
+    files = data.get("files") if isinstance(data, dict) else None
+    if not files:
+        return None
+
+    sources: dict[str, str] = {}
+    metadata_json: dict | None = None
+    for f in files:
+        name = f.get("name", "")
+        content = f.get("content", "")
+        if name.endswith(".sol") and content:
+            rel = _sanitize_relpath(f.get("path") or name)
+            sources[rel] = content
+        elif name == "metadata.json" and content:
+            try:
+                metadata_json = json.loads(content)
+            except json.JSONDecodeError:
+                metadata_json = None
+    if not sources:
+        return None
+
+    pkg.verified = True
+    pkg.source_files = sources
+    pkg.raw_source_code = next(iter(sources.values()), "")
+    if metadata_json:
+        comp = (metadata_json.get("compiler") or {}).get("version", "")
+        pkg.compiler_version = comp
+        settings_meta = metadata_json.get("settings") or {}
+        pkg.evm_version = settings_meta.get("evmVersion", "") or ""
+        opt = settings_meta.get("optimizer") or {}
+        pkg.optimization_used = bool(opt.get("enabled"))
+        try:
+            pkg.optimization_runs = int(opt.get("runs") or 0)
+        except (TypeError, ValueError):
+            pkg.optimization_runs = 0
+        out = (metadata_json.get("output") or {})
+        abi = out.get("abi")
+        if isinstance(abi, list):
+            pkg.abi = abi
+        # contract name: take from compilationTarget if present
+        target = settings_meta.get("compilationTarget") or {}
+        if isinstance(target, dict) and target:
+            pkg.contract_name = next(iter(target.values()), "") or pkg.contract_name
+    return pkg
+
+
+def fetch_source(address: str, chain: str = "ethereum") -> SourcePackage:
+    """Etherscan first; Sourcify fallback when unverified/errored.
+
+    Drop-in replacement for ``fetch_etherscan_source`` (same return type) — the
+    scanner should call this so a single explorer failure doesn't blind the scan.
+    """
+    pkg = fetch_etherscan_source(address, chain)
+    if pkg.verified and pkg.source_files:
+        return pkg
+    if not get_settings().enable_sourcify:
+        return pkg
+    alt = fetch_sourcify_source(address, chain)
+    if alt and alt.verified and alt.source_files:
+        # preserve proxy/impl info etherscan may have surfaced
+        alt.is_proxy = pkg.is_proxy or alt.is_proxy
+        alt.implementation = pkg.implementation or alt.implementation
+        if pkg.abi is not None and alt.abi is None:
+            alt.abi = pkg.abi
+        alt.error = None
+        logger.info("source for %s recovered via Sourcify fallback", address)
+        return alt
+    return pkg
+
+
+# --------------------------------------------------------------------------- #
+# Library fingerprinting (gap #8) — don't re-flag audited library code across
+# hundreds of contracts. Detectors/coverage can skip these paths.
+# --------------------------------------------------------------------------- #
+_KNOWN_LIBRARY_MARKERS = (
+    "@openzeppelin/", "openzeppelin/contracts", "solmate/", "solady/",
+    "@uniswap/", "@chainlink/", "forge-std/", "ds-test/", "@layerzerolabs/",
+    "lib/openzeppelin", "lib/solmate", "lib/solady", "lib/forge-std",
+)
+
+
+def is_known_library_file(path: str) -> bool:
+    p = (path or "").replace("\\", "/").lower()
+    return any(mk in p for mk in _KNOWN_LIBRARY_MARKERS)
+
+
+def project_source_files(source_files: dict[str, str]) -> dict[str, str]:
+    """Source files with audited 3rd-party libraries stripped out (best effort).
+
+    Keeps the result non-empty: if everything looks like a library, return the
+    original (better to over-scan than to scan nothing)."""
+    project = {p: c for p, c in source_files.items() if not is_known_library_file(p)}
+    return project or source_files
+
+
 def write_source_to_workspace(source_dir: Path, pkg: SourcePackage) -> Path:
     """Write all source files (and raw payload) under ``source_dir``."""
     source_dir.mkdir(parents=True, exist_ok=True)

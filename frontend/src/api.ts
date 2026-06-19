@@ -179,6 +179,73 @@ export type FindingWithDetails = Finding & {
   target_address: string
 }
 
+// --------------------- Monitoring ("before-drain") ----------------
+
+export interface WatchTarget {
+  id: number
+  address: string
+  chain: string
+  label: string
+  enabled: boolean
+  scan_profile: string
+  interval_seconds: number | null
+  github_url: string | null
+  impl_address: string | null
+  codehash: string | null
+  admin: string | null
+  owner: string | null
+  last_checked_at: string | null
+  last_change_at: string | null
+  last_scan_id: number | null
+  created_at: string
+}
+
+export interface WatchEventRow {
+  kind: string
+  detail: Record<string, unknown>
+  scan_id: number | null
+  created_at: string
+}
+
+export type WatchTargetWithEvents = WatchTarget & { events: WatchEventRow[] }
+
+export interface DeployerWatch {
+  id: number
+  deployer_address: string
+  chain: string
+  label: string
+  enabled: boolean
+  scan_profile: string
+  interval_seconds: number | null
+  last_block_checked: number
+  deployed_count: number
+  last_checked_at: string | null
+  created_at: string
+}
+
+export interface MonitorStatus {
+  running: boolean
+  interval_seconds: number
+  alerts_configured: boolean
+  enable_monitor_default: boolean
+}
+
+export interface Suppression {
+  id: number
+  fingerprint: string
+  address: string | null
+  detector: string
+  title: string
+  reason: string
+  created_at: string
+}
+
+export interface AddWatchPayload {
+  addresses_blob: string
+  chain: string
+  scan_profile: string
+}
+
 // --------------------------- HTTP core ---------------------------
 
 class ApiError extends Error {
@@ -263,6 +330,38 @@ export const api = {
 
   exportFindingMarkdownUrl: (id: string) =>
     `/api/findings/${id}/export?format=md`,
+
+  // --- Monitoring ---
+  listWatch: () => request<WatchTarget[]>('/api/watch'),
+  getWatch: (id: number) => request<WatchTargetWithEvents>(`/api/watch/${id}`),
+  addWatch: (body: AddWatchPayload) =>
+    request<{ added: string[]; skipped_existing: string[] }>('/api/watch', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  deleteWatch: (id: number) =>
+    request<{ deleted: number }>(`/api/watch/${id}`, { method: 'DELETE' }),
+  checkWatch: (id: number) =>
+    request<Record<string, unknown>>(`/api/watch/${id}/check`, { method: 'POST' }),
+
+  listDeployers: () => request<DeployerWatch[]>('/api/deployers'),
+  addDeployer: (body: AddWatchPayload) =>
+    request<{ added: string[]; skipped_existing: string[] }>('/api/deployers', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  deleteDeployer: (id: number) =>
+    request<{ deleted: number }>(`/api/deployers/${id}`, { method: 'DELETE' }),
+  checkDeployer: (id: number) =>
+    request<Record<string, unknown>>(`/api/deployers/${id}/check`, { method: 'POST' }),
+
+  monitorStatus: () => request<MonitorStatus>('/api/monitor/status'),
+  monitorStart: () => request<MonitorStatus>('/api/monitor/start', { method: 'POST' }),
+  monitorStop: () => request<MonitorStatus>('/api/monitor/stop', { method: 'POST' }),
+
+  listSuppressions: () => request<Suppression[]>('/api/suppressions'),
+  deleteSuppression: (id: number) =>
+    request<{ deleted: number }>(`/api/suppressions/${id}`, { method: 'DELETE' }),
 }
 
 // --------------------------- WebSocket ---------------------------

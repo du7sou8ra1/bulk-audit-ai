@@ -130,6 +130,20 @@ def score_finding(
         conf += 2
         notes.append("+2 fork PoC: unprivileged call succeeded on a local fork")
 
+    # Adversarial refutation (gap #3): an independent skeptic read the code and
+    # disproved exploitability -> hard-cap so it cannot reach a critical bucket.
+    refutation = ev.get("refutation") or {}
+    if ev.get("refuted"):
+        conf = min(conf, 2.0)
+        notes.append(
+            "capped: refuted by adversarial review — "
+            + str(refutation.get("refutation", "not unprivileged-exploitable"))[:160]
+        )
+    elif refutation.get("attempted") and refutation.get("is_real") and not ev.get("poc_passed"):
+        # Survived refutation but still unproven -> small, bounded confidence bump.
+        conf += 1
+        notes.append("+1 survived adversarial refutation (still needs a PoC)")
+
     # No PoC + no clear unauthorized path -> stay cautious (mirrors -4 signal).
     has_unauthorized_path = (
         not ev.get("has_access_control", False)
@@ -141,8 +155,16 @@ def score_finding(
         conf = min(conf, 4.0)
         notes.append("capped: no demonstrated unauthorized path / no PoC")
 
+    # FP-learning: a fingerprint the user marked false-positive is forced to FP.
+    suppressed = bool(ev.get("suppressed"))
+    if suppressed:
+        conf = 0.0
+        notes.append("suppressed: matches a user-marked false-positive fingerprint")
+
     conf = _clamp(conf)
-    classification = _classify(impact, conf)
+    classification = (
+        Classification.FALSE_POSITIVE if suppressed else _classify(impact, conf)
+    )
     return ScoreResult(
         impact_score=impact,
         confidence_score=conf,

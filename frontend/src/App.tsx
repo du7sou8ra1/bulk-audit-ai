@@ -7,6 +7,7 @@ import ContractDetail from './pages/ContractDetail'
 import FindingDetail from './pages/FindingDetail'
 import Settings from './pages/Settings'
 import ToolHealth from './pages/ToolHealth'
+import Monitor from './pages/Monitor'
 
 export default function App() {
   return (
@@ -20,6 +21,7 @@ export default function App() {
             <Route path="/scans/:id" element={<ScanDetail />} />
             <Route path="/targets/:id" element={<ContractDetail />} />
             <Route path="/findings/:id" element={<FindingDetail />} />
+            <Route path="/monitor" element={<Monitor />} />
             <Route path="/health" element={<ToolHealth />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="*" element={<Navigate to="/" replace />} />

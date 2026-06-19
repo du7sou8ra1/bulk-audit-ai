@@ -37,8 +37,10 @@ FORBIDDEN_RPC_METHODS = frozenset(
 class OnchainClient:
     """Thin, read-only wrapper around web3.py."""
 
-    def __init__(self, rpc_url: str | None = None):
-        self.rpc_url = rpc_url or get_settings().rpc_url
+    def __init__(self, rpc_url: str | None = None, chain: str | None = None):
+        s = get_settings()
+        self.chain = chain
+        self.rpc_url = rpc_url or (s.rpc_url_for(chain) if chain else s.rpc_url)
         self._w3: Web3 | None = None
 
     # ------------------------------------------------------------------ #
@@ -185,3 +187,40 @@ class OnchainClient:
 
     def get_min_delay(self, contract: str) -> int | None:
         return self.call_typed(contract, "getMinDelay()", return_types=["uint256"])
+
+    # ------------------------------------------------------------------ #
+    # Admin classifier (Wasabi / Drift / Truebit signal): is the owner/admin
+    # an unprotected EOA, a multisig, or a timelock?  Read-only.
+    # ------------------------------------------------------------------ #
+    def classify_admin(self, address: str | None) -> dict:
+        """Classify an owner/admin address as eoa | gnosis_safe | timelock | contract.
+
+        An EOA owner of an upgrade/withdraw path is the high-risk shape (a single
+        compromised key drains the protocol). A Safe/timelock is normal governance.
+        """
+        result = {"address": address, "kind": "unknown", "is_eoa": None,
+                  "threshold": None, "min_delay": None}
+        if not address or not self.w3:
+            return result
+        code = self.get_code(address)
+        if code is None:
+            return result
+        if code in ("0x", "0x0", ""):
+            result["kind"] = "eoa"
+            result["is_eoa"] = True
+            return result
+        result["is_eoa"] = False
+        # Gnosis Safe? getThreshold()/getOwners()
+        threshold = self.call_typed(address, "getThreshold()", return_types=["uint256"])
+        if isinstance(threshold, int) and threshold >= 1:
+            result["kind"] = "gnosis_safe"
+            result["threshold"] = threshold
+            return result
+        # OZ TimelockController? getMinDelay()
+        delay = self.get_min_delay(address)
+        if isinstance(delay, int):
+            result["kind"] = "timelock"
+            result["min_delay"] = delay
+            return result
+        result["kind"] = "contract"
+        return result

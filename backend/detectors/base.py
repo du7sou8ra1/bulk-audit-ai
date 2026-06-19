@@ -195,6 +195,45 @@ def is_externally_callable(fn: SolFunction) -> bool:
     return fn.visibility in ("public", "external", "unknown")
 
 
+_FUNC_BODY_RE = re.compile(
+    r"function\s+([A-Za-z_]\w*)\s*\(([^)]*)\)([^{;]*)\{", re.MULTILINE
+)
+
+
+def iter_function_bodies(source: str):
+    """Yield (name, params, header_tail, body) for each braced function.
+
+    Shared by the v0.4 attack-class detectors so each one reasons over the WHOLE
+    function body (and its modifiers via header_tail), not a truncated snippet.
+    Comments are stripped first so commented-out code can never trigger a match.
+    """
+    if not source:
+        return
+    src = strip_comments(source)
+    for m in _FUNC_BODY_RE.finditer(src):
+        name = m.group(1)
+        params = (m.group(2) or "").strip()
+        tail = (m.group(3) or "").strip()
+        start = m.end() - 1
+        depth, i = 0, start
+        n = len(src)
+        while i < n:
+            c = src[i]
+            if c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            i += 1
+        yield name, params, tail, src[start : i + 1]
+
+
+def header_has_access_control(header_tail: str) -> bool:
+    t = (header_tail or "").lower()
+    return any(mk.lower() in t for mk in ACCESS_CONTROL_MARKERS)
+
+
 def role_hash(role_name: str) -> bytes:
     """keccak256 of a role name (OpenZeppelin AccessControl convention)."""
     from eth_utils import keccak

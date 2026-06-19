@@ -46,6 +46,23 @@ class Settings(BaseSettings):
     enable_semgrep: bool = Field(default=True, alias="ENABLE_SEMGREP")
     enable_foundry: bool = Field(default=False, alias="ENABLE_FOUNDRY")
     enable_deepseek: bool = Field(default=True, alias="ENABLE_DEEPSEEK")
+    # --- New reasoning layers (gaps #1/#3/#8) ------------------------------- #
+    enable_invariant_reasoner: bool = Field(default=True, alias="ENABLE_INVARIANT_REASONER")
+    enable_refutation: bool = Field(default=True, alias="ENABLE_REFUTATION")
+    enable_sourcify: bool = Field(default=True, alias="ENABLE_SOURCIFY")
+    max_hypotheses_per_target: int = Field(default=8, alias="MAX_HYPOTHESES_PER_TARGET")
+    # Fork oracle/flash-loan manipulation simulator (needs ENABLE_FOUNDRY + RPC).
+    enable_flashloan_sim: bool = Field(default=True, alias="ENABLE_FLASHLOAN_SIM")
+    max_sims_per_target: int = Field(default=2, alias="MAX_SIMS_PER_TARGET")
+
+    # --- Monitoring ("before-drain") + alerting ----------------------------- #
+    enable_monitor: bool = Field(default=False, alias="ENABLE_MONITOR")
+    monitor_interval_seconds: int = Field(default=300, alias="MONITOR_INTERVAL_SECONDS")
+    monitor_scan_profile: str = Field(default="defi-deep", alias="MONITOR_SCAN_PROFILE")
+    # Cap auto-onboarded contracts per deployer-watch cycle (prolific factories).
+    max_new_deploys_per_check: int = Field(default=25, alias="MAX_NEW_DEPLOYS_PER_CHECK")
+    # Outbound webhook for alerts (Slack/Discord/Telegram-compatible or generic JSON).
+    alert_webhook_url: str = Field(default="", alias="ALERT_WEBHOOK_URL")
 
     # --- Limits / timeouts --------------------------------------------------
     max_parallel_scans: int = Field(default=2, alias="MAX_PARALLEL_SCANS")
@@ -83,15 +100,20 @@ class Settings(BaseSettings):
         """Map a chain name to its Etherscan v2 chainid."""
         chain = (chain or self.chain or "ethereum").lower()
         return {
-            "ethereum": 1,
-            "mainnet": 1,
-            "sepolia": 11155111,
-            "arbitrum": 42161,
-            "optimism": 10,
-            "base": 8453,
-            "polygon": 137,
-            "bsc": 56,
+            "ethereum": 1, "mainnet": 1, "sepolia": 11155111,
+            "arbitrum": 42161, "optimism": 10, "base": 8453, "polygon": 137,
+            "bsc": 56, "avalanche": 43114, "avax": 43114, "scroll": 534352,
+            "linea": 59144, "zksync": 324, "zksync-era": 324, "blast": 81457,
+            "gnosis": 100, "fantom": 250, "celo": 42220, "mantle": 5000,
+            "mode": 34443, "polygonzkevm": 1101, "arbitrum-nova": 42170,
         }.get(chain, 1)
+
+    def rpc_url_for(self, chain: str | None = None) -> str:
+        """Per-chain RPC: env ``RPC_URL_<CHAIN>`` (e.g. RPC_URL_BASE) or the default."""
+        import os
+
+        chain = (chain or self.chain or "ethereum").lower()
+        return os.environ.get(f"RPC_URL_{chain.upper().replace('-', '_')}", "") or self.rpc_url
 
 
 @lru_cache
@@ -127,6 +149,10 @@ def masked_settings() -> dict:
             "semgrep": s.enable_semgrep,
             "foundry": s.enable_foundry,
             "deepseek": s.enable_deepseek,
+            "invariant_reasoner": s.enable_invariant_reasoner,
+            "refutation": s.enable_refutation,
+            "sourcify": s.enable_sourcify,
+            "flashloan_sim": s.enable_flashloan_sim,
         },
         "limits": {
             "max_parallel_scans": s.max_parallel_scans,

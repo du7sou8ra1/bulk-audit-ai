@@ -25,7 +25,16 @@ from .database import SessionLocal, init_db
 async def _lifespan(app: FastAPI):
     init_db()
     _recover_interrupted_scans()
+    # Start the "before-drain" monitor if enabled (watches upgrades/codehash changes).
+    if get_settings().enable_monitor:
+        from .core.monitor import monitor
+        monitor.start()
     yield
+    try:
+        from .core.monitor import monitor
+        monitor.stop()
+    except Exception:  # pragma: no cover - defensive
+        pass
 
 
 def create_app() -> FastAPI:
@@ -45,12 +54,13 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    from .api import findings, scans, settings as settings_api, targets, websocket
+    from .api import findings, scans, settings as settings_api, targets, watch, websocket
 
     app.include_router(scans.router)
     app.include_router(targets.router)
     app.include_router(findings.router)
     app.include_router(settings_api.router)
+    app.include_router(watch.router)
     app.include_router(websocket.router)
 
     @app.get("/api/health")

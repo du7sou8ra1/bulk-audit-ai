@@ -34,17 +34,23 @@ from ..models import (
     ToolStatus,
     utcnow,
 )
+from . import coverage as coverage_mod
+from . import dedup
 from . import evidence as evidence_mod
+from . import flashloan_sim
 from . import poc_generator
 from . import report_writer
 from .ai_reviewer import review_finding
 from .command_runner import which
+from .invariant_reasoner import run_invariant_reasoner
 from .onchain import OnchainClient
 from .proxy_resolver import resolve_proxy
+from .refuter import refute as refute_finding
 from .scoring import score_finding
 from .source_fetcher import (
     SourcePackage,
-    fetch_etherscan_source,
+    fetch_source,
+    project_source_files,
     write_source_to_workspace,
 )
 
@@ -220,7 +226,7 @@ async def process_target(
     scan_id: int, target_id: int, profile: str, chain: str, toggles: dict, mgr: ScanManager
 ) -> None:
     s = get_settings()
-    onchain = OnchainClient()
+    onchain = OnchainClient(chain=chain)
 
     with SessionLocal() as db:
         t = db.get(Target, target_id)
@@ -233,7 +239,7 @@ async def process_target(
 
     # --- Fetch source / ABI ------------------------------------------------ #
     try:
-        pkg = await asyncio.to_thread(fetch_etherscan_source, address, chain)
+        pkg = await asyncio.to_thread(fetch_source, address, chain)
     except Exception as exc:
         logger.warning("source fetch failed for %s: %s", address, exc)
         pkg = SourcePackage(address=address, error=str(exc))
@@ -256,7 +262,7 @@ async def process_target(
     if proxy_info.implementation:
         try:
             impl_pkg = await asyncio.to_thread(
-                fetch_etherscan_source, proxy_info.implementation, chain
+                fetch_source, proxy_info.implementation, chain
             )
             impl_dir = workspace["source"] / "_implementation"
             write_source_to_workspace(impl_dir, impl_pkg)
@@ -314,7 +320,9 @@ async def process_target(
         proxy_info=proxy_info,
         workspace=workspace["base"],
         contract_name=contract_name or "",
-        source_files=source_files,
+        # Detectors/reasoner see PROJECT code only (skip audited OZ/Solady libs);
+        # the static tools still compile the full set from the workspace.
+        source_files=project_source_files(source_files),
         abi=pkg.abi if pkg.abi is not None else (impl_pkg.abi if impl_pkg else None),
         bytecode=bytecode,
         tool_outputs=tool_outputs,
@@ -325,7 +333,9 @@ async def process_target(
     ]
 
     candidates = []
+    detectors_run: list[str] = []
     for det in get_detectors(profile):
+        detectors_run.append(det.name)
         try:
             found = await asyncio.to_thread(det.run, ctx)
             candidates.extend(found)
@@ -335,7 +345,24 @@ async def process_target(
             logger.warning("detector %s failed on %s: %s", det.name, address, exc)
             _log(scan_id, f"[{address}] detector {det.name} error: {exc}")
 
-    # --- Score + (optional) fork PoC + AI review + persist ---------------- #
+    # --- Semantic invariant reasoning (gap #1): LLM hunts cross-function ---- #
+    reasoner_meta: dict = {}
+    if _toggle(toggles, "invariant_reasoner", s.enable_invariant_reasoner) and source_files:
+        _log(scan_id, f"[{address}] invariant reasoner: analyzing value-moving functions")
+        try:
+            hyps, reasoner_meta = await asyncio.to_thread(run_invariant_reasoner, ctx)
+            if hyps:
+                detectors_run.append("invariant_reasoner")
+                candidates.extend(hyps)
+                _log(scan_id, f"[{address}] invariant reasoner: {len(hyps)} hypothesis(es)")
+            elif reasoner_meta.get("skipped") or reasoner_meta.get("error"):
+                _log(scan_id, f"[{address}] invariant reasoner skipped: "
+                              f"{reasoner_meta.get('skipped') or reasoner_meta.get('error')}")
+        except Exception as exc:
+            logger.warning("invariant reasoner failed on %s: %s", address, exc)
+            _log(scan_id, f"[{address}] invariant reasoner error: {exc}")
+
+    # --- Score + (optional) refute + fork PoC + AI review + persist ------- #
     _set_target_status(scan_id, target_id, TargetStatus.AI)
     deepseek_on = _toggle(toggles, "deepseek", s.enable_deepseek)
     foundry_on = _toggle(toggles, "foundry", s.enable_foundry)
@@ -344,15 +371,40 @@ async def process_target(
     )
     MAX_POCS_PER_TARGET = 3
     poc_count = 0
+    flashsim_on = (
+        poc_capable
+        and _toggle(toggles, "flashloan_sim", s.enable_flashloan_sim)
+    )
+    sim_count = 0
 
+    refute_on = _toggle(toggles, "refutation", s.enable_refutation)
     for i, cand in enumerate(candidates):
         if mgr.is_cancelled(scan_id):
             break
+
+        # FP-learning (dedup): a candidate matching a user-marked false-positive
+        # fingerprint is suppressed and skips every expensive step below.
+        suppressed = dedup.apply_suppression(cand, address)
+        if suppressed:
+            _log(scan_id, f"[{address}] suppressed (known FP): {cand.title[:70]}")
+
+        # Adversarial refutation (gap #3): an independent skeptic reads the code
+        # and tries to DISPROVE the finding before it is scored. Skip pure-info
+        # notes and weak candidates to save tokens.
+        if refute_on and not suppressed and not (cand.evidence or {}).get("informational") and cand.impact_score >= 5:
+            try:
+                await asyncio.to_thread(refute_finding, ctx, cand)
+                if (cand.evidence or {}).get("refuted"):
+                    _log(scan_id, f"[{address}] refuted: {cand.title[:80]}")
+            except Exception as exc:
+                logger.warning("refuter failed on %s: %s", address, exc)
+
         score = score_finding(cand, all_tool_findings)
 
         # Generate + run a read-only fork PoC for strong, eligible candidates.
         if (
             poc_capable
+            and not suppressed
             and poc_count < MAX_POCS_PER_TARGET
             and poc_generator.is_poc_eligible(cand, score)
         ):
@@ -391,12 +443,57 @@ async def process_target(
                     f"{poc.get('note')}",
                 )
 
+        # State-invariant PoC scaffold (gap #2) for accounting/settlement classes
+        # — a compiling skeleton the user completes (never auto-counted as passing).
+        if poc_generator.is_state_invariant_finding(cand) and not suppressed and cand.affected_functions:
+            try:
+                sc = poc_generator.write_state_scaffold(
+                    ctx, cand, workspace["foundry"] / f"scaffold_{i}"
+                )
+                cand.evidence["state_poc_scaffold"] = sc.get("path")
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning("scaffold write failed: %s", exc)
+
+        # Fork oracle/flash-loan manipulation sim (gap: validation) — confirms the
+        # donation/balanceOf-manipulable price class; scaffolds the AMM case.
+        if (
+            flashsim_on
+            and not suppressed
+            and sim_count < s.max_sims_per_target
+            and flashloan_sim.is_sim_eligible(cand)
+        ):
+            sim_dir = workspace["foundry"] / f"sim_{i}"
+            _log(scan_id, f"[{address}] oracle-manipulation fork sim for {cand.detector}")
+            sim = await asyncio.to_thread(
+                flashloan_sim.generate_and_run,
+                ctx, cand, sim_dir, rpc_url=s.rpc_url, timeout=s.foundry_timeout,
+            )
+            sim_count += 1
+            cand.evidence["oracle_sim"] = {
+                "manipulable": sim.get("manipulable"),
+                "note": sim.get("note"),
+                "price_fn": sim.get("price_fn"),
+                "scaffold": sim.get("scaffold", False),
+            }
+            if sim.get("manipulable"):
+                cand.evidence["poc_passed"] = True
+                cand.evidence["manipulation_confirmed"] = True
+                runner = sim.get("runner")
+                if runner is not None:
+                    tr = _create_toolrun(target_id, "oracle-sim")
+                    _finalize_toolrun(tr.id, runner)
+                    hub.publish(scan_id, {
+                        "type": "tool_update", "target_id": target_id, "tool": "oracle-sim",
+                        "status": runner.status, "summary": sim.get("note")})
+                score = score_finding(cand, all_tool_findings)  # re-score with confirmation
+                _log(scan_id, f"[{address}] ORACLE MANIPULATION CONFIRMED: {sim.get('note')}")
+
         packet = evidence_mod.build_ai_packet(ctx, cand, score)
         slug = f"{cand.detector}_{i}_{(cand.affected_functions or ['x'])[0]}"
         evidence_mod.write_finding_evidence(workspace, slug, cand, packet)
 
         ai_result = None
-        if deepseek_on:
+        if deepseek_on and not suppressed:
             prompt_path = workspace["ai"] / f"{slug}.prompt.txt"
             ai_result = await asyncio.to_thread(
                 review_finding, packet, prompt_save_path=prompt_path
@@ -406,6 +503,24 @@ async def process_target(
             )
 
         _persist_finding(scan_id, target_id, cand, score, ai_result, workspace)
+
+    # --- Coverage accounting (gap #6): make "0 findings" honestly scoped --- #
+    try:
+        tool_statuses = {t: (o.get("status") or "?") for t, o in tool_outputs.items()}
+        cov = coverage_mod.build_coverage(
+            ctx,
+            detectors_run=detectors_run,
+            tool_statuses=tool_statuses,
+            candidate_count=len(candidates),
+            source_verified=bool(pkg.verified or (impl_pkg and impl_pkg.verified)),
+            reasoner_meta=reasoner_meta,
+        )
+        (workspace["base"] / "coverage.json").write_text(_safe_json(cov), encoding="utf-8")
+        _log(scan_id, f"[{address}] coverage: {cov['honest_summary']}")
+        hub.publish(scan_id, {"type": "coverage", "target_id": target_id,
+                              "address": address, "coverage": cov})
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("coverage build failed for %s: %s", address, exc)
 
     _set_target_status(scan_id, target_id, TargetStatus.COMPLETED)
     _log(scan_id, f"[{address}] done ({len(candidates)} candidates)")
@@ -602,6 +717,22 @@ def _persist_finding(scan_id, target_id, cand, score, ai_result, workspace) -> N
                 "confidence": finding.confidence_score,
             },
         )
+
+        # "Before-drain" alert: a confirmed critical pages a human immediately.
+        if finding.classification == Classification.CONFIRMED_CRITICAL:
+            try:
+                from . import alerting
+
+                alerting.send_alert(
+                    f"CONFIRMED CRITICAL: {finding.title[:120]}",
+                    f"target={target.address} detector={finding.detector} "
+                    f"impact={finding.impact_score} confidence={finding.confidence_score}",
+                    severity="critical",
+                    context={"scan_id": scan_id, "finding_id": finding.id,
+                             "address": target.address},
+                )
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning("critical alert failed: %s", exc)
 
 
 def _safe_json(obj) -> str:
