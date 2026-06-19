@@ -1,0 +1,178 @@
+"""Pydantic schemas for the API layer (request bodies + response models)."""
+from __future__ import annotations
+
+import datetime as dt
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+# --------------------------------------------------------------------------- #
+# Requests
+# --------------------------------------------------------------------------- #
+SCAN_PROFILES = [
+    "quick",
+    "standard",
+    "deep",
+    "governance-focused",
+    "zk-focused",
+    "privacy-pool-focused",
+    "bridge-focused",
+]
+
+
+class ScanToggles(BaseModel):
+    slither: bool | None = None
+    mythril: bool | None = None
+    semgrep: bool | None = None
+    foundry: bool | None = None
+    deepseek: bool | None = None
+
+
+class TargetInput(BaseModel):
+    address: str
+    label: str = ""
+
+
+class CreateScanRequest(BaseModel):
+    name: str = ""
+    chain: str = "ethereum"
+    scan_profile: str = "standard"
+    # Either a list of structured targets or a raw blob of pasted addresses.
+    targets: list[TargetInput] = Field(default_factory=list)
+    addresses_blob: str = ""
+    toggles: ScanToggles = Field(default_factory=ScanToggles)
+
+    @field_validator("scan_profile")
+    @classmethod
+    def _known_profile(cls, v: str) -> str:
+        if v not in SCAN_PROFILES:
+            raise ValueError(f"unknown scan_profile '{v}'; expected one of {SCAN_PROFILES}")
+        return v
+
+
+class FindingStatusUpdate(BaseModel):
+    status: str  # open | false_positive | needs_more_investigation | confirmed
+
+
+# --------------------------------------------------------------------------- #
+# Responses
+# --------------------------------------------------------------------------- #
+class ToolRunOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    tool_name: str
+    status: str
+    started_at: dt.datetime | None = None
+    finished_at: dt.datetime | None = None
+    command: str | None = None
+    exit_code: int | None = None
+    timed_out: bool = False
+    summary: str | None = None
+
+
+class AIReviewOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    model: str
+    classification: str | None = None
+    rationale: str | None = None
+    recommended_next_steps: list[Any] = Field(default_factory=list)
+    request_json: dict = Field(default_factory=dict)
+    response_json: dict = Field(default_factory=dict)
+    created_at: dt.datetime
+
+
+class FindingOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    target_id: int
+    detector: str
+    title: str
+    severity_candidate: str
+    confidence_before_ai: str
+    impact_score: float
+    confidence_score: float
+    status: str
+    classification: str
+    description: str
+    evidence_json: dict = Field(default_factory=dict)
+    next_tests_json: list[Any] = Field(default_factory=list)
+    created_at: dt.datetime
+
+
+class FindingDetailOut(FindingOut):
+    ai_review: AIReviewOut | None = None
+    target_address: str = ""
+
+
+class TargetOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    scan_id: int
+    address: str
+    chain: str
+    label: str
+    status: str
+    source_verified: bool
+    contract_name: str | None = None
+    is_proxy: bool
+    proxy_type: str | None = None
+    implementation_address: str | None = None
+    proxy_admin: str | None = None
+    owner: str | None = None
+    balance_eth: float | None = None
+    error: str | None = None
+    updated_at: dt.datetime
+
+
+class TargetDetailOut(TargetOut):
+    tool_runs: list[ToolRunOut] = Field(default_factory=list)
+    findings: list[FindingOut] = Field(default_factory=list)
+
+
+class ScanOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    name: str
+    created_at: dt.datetime
+    started_at: dt.datetime | None = None
+    finished_at: dt.datetime | None = None
+    status: str
+    chain: str
+    scan_profile: str
+    toggles: dict = Field(default_factory=dict)
+    total_targets: int
+    completed_targets: int
+    critical_count: int
+    needs_investigation_count: int
+    low_info_count: int
+    false_positive_count: int
+    error: str | None = None
+
+
+class ScanDetailOut(ScanOut):
+    targets: list[TargetOut] = Field(default_factory=list)
+
+
+class DashboardStats(BaseModel):
+    total_scans: int
+    running_scans: int
+    completed_scans: int
+    critical_candidates: int
+    needs_investigation: int
+    low_info: int
+    false_positives: int
+    recent_scans: list[ScanOut] = Field(default_factory=list)
+
+
+class ToolHealthItem(BaseModel):
+    name: str
+    installed: bool
+    version: str | None = None
+    path: str | None = None
+    warning: str | None = None
+
+
+class ToolHealthOut(BaseModel):
+    checked_at: dt.datetime
+    tools: list[ToolHealthItem]

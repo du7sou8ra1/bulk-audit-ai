@@ -1,0 +1,81 @@
+"""Tool Health preflight: detect installed security tools, versions and paths.
+
+A missing tool is reported (not fatal): scans still run and record a SKIPPED
+ToolRun for anything unavailable.
+"""
+from __future__ import annotations
+
+import datetime as dt
+
+from .command_runner import run_command, which
+
+# (display_name, [executable candidates], [arg-sets to try for a version])
+_TOOLS: list[tuple[str, list[str], list[list[str]]]] = [
+    ("slither", ["slither"], [["slither", "--version"]]),
+    ("mythril", ["myth", "mythril"], [["myth", "version"], ["myth", "--version"]]),
+    ("semgrep", ["semgrep"], [["semgrep", "--version"]]),
+    ("forge", ["forge"], [["forge", "--version"]]),
+    ("cast", ["cast"], [["cast", "--version"]]),
+    ("anvil", ["anvil"], [["anvil", "--version"]]),
+    ("solc-select", ["solc-select"], [["solc-select", "versions"]]),
+    ("solc", ["solc"], [["solc", "--version"]]),
+    ("python", ["python", "python3"], [["python", "--version"], ["python3", "--version"]]),
+    ("node", ["node"], [["node", "--version"]]),
+    ("echidna", ["echidna", "echidna-test"], [["echidna", "--version"]]),
+]
+
+# Tools that are core vs optional (affects the warning text).
+_OPTIONAL = {"anvil", "solc", "echidna"}
+
+
+def _first_line(text: str) -> str:
+    for line in (text or "").splitlines():
+        if line.strip():
+            return line.strip()
+    return (text or "").strip()
+
+
+def check_tools() -> dict:
+    items: list[dict] = []
+    for name, candidates, version_cmds in _TOOLS:
+        path = None
+        for c in candidates:
+            path = which(c)
+            if path:
+                break
+
+        installed = path is not None
+        version = None
+        warning = None
+
+        if installed:
+            for cmd in version_cmds:
+                if which(cmd[0]) is None:
+                    continue
+                res = run_command(cmd, timeout=25)
+                out = (res.stdout or "").strip() or (res.stderr or "").strip()
+                if out and not res.timed_out:
+                    version = _first_line(out)[:200]
+                    break
+            if version is None:
+                warning = "installed but version check produced no output"
+        else:
+            if name in _OPTIONAL:
+                warning = "optional tool not installed"
+            else:
+                warning = "not installed — related scans will be skipped"
+
+        items.append(
+            {
+                "name": name,
+                "installed": installed,
+                "version": version,
+                "path": path,
+                "warning": warning,
+            }
+        )
+
+    return {
+        "checked_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "tools": items,
+    }

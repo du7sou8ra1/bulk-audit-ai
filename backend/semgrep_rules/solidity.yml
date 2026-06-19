@@ -1,0 +1,76 @@
+# BulkAuditAI local Solidity rules.
+# Written in `generic` mode with pattern-regex so they run on any Semgrep
+# version without requiring the Solidity language pack. These surface
+# CANDIDATES for the detectors / AI layer — they are intentionally noisy.
+rules:
+  - id: solidity-tx-origin-auth
+    languages: [generic]
+    severity: WARNING
+    message: "Use of tx.origin (possible phishing/auth bypass if used for authorization)."
+    paths:
+      include: ["*.sol"]
+    patterns:
+      - pattern-regex: "tx\\.origin"
+
+  - id: solidity-delegatecall
+    languages: [generic]
+    severity: ERROR
+    message: "delegatecall present — verify target is not user-controlled and storage layout is safe."
+    paths:
+      include: ["*.sol"]
+    patterns:
+      - pattern-regex: "\\.\\s*delegatecall\\s*\\("
+
+  - id: solidity-low-level-call
+    languages: [generic]
+    severity: WARNING
+    message: "Low-level .call present — check return value and whether target/data are user-controlled."
+    paths:
+      include: ["*.sol"]
+    patterns:
+      - pattern-regex: "\\.\\s*call\\s*[\\{(]"
+
+  - id: solidity-selfdestruct
+    languages: [generic]
+    severity: ERROR
+    message: "selfdestruct/suicide present — contract can be destroyed; verify access control."
+    paths:
+      include: ["*.sol"]
+    patterns:
+      - pattern-regex: "(selfdestruct|suicide)\\s*\\("
+
+  - id: solidity-permit-to-msg-sender
+    languages: [generic]
+    severity: ERROR
+    message: "permit(owner, msg.sender, ...) — allowance granted to caller; review for permit-front-running misuse."
+    paths:
+      include: ["*.sol"]
+    patterns:
+      - pattern-regex: "permit\\s*\\([^)]*msg\\.sender"
+
+  - id: solidity-upgrade-function
+    languages: [generic]
+    severity: WARNING
+    message: "Upgrade-style function declared — confirm it carries access control (onlyOwner/onlyRole/timelock)."
+    paths:
+      include: ["*.sol"]
+    patterns:
+      - pattern-regex: "function\\s+(upgradeToAndCall|upgradeAndCall|upgradeTo|upgrade|setImplementation|changeImplementation|changeProxyAdmin|diamondCut)\\s*\\("
+
+  - id: solidity-mint-function
+    languages: [generic]
+    severity: INFO
+    message: "mint() declared — confirm access control and supply invariants."
+    paths:
+      include: ["*.sol"]
+    patterns:
+      - pattern-regex: "function\\s+_?mint\\w*\\s*\\("
+
+  - id: solidity-withdraw-arbitrary-recipient
+    languages: [generic]
+    severity: WARNING
+    message: "withdraw-style function takes an address parameter — verify recipient cannot be attacker-chosen without auth."
+    paths:
+      include: ["*.sol"]
+    patterns:
+      - pattern-regex: "function\\s+(withdraw|claim|redeem|rescue|sweep)\\w*\\s*\\([^)]*address[^)]*\\)"

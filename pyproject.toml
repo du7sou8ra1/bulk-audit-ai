@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bulk-audit-ai"
+version = "0.1.0"
+description = "Bulk smart-contract vulnerability triage for defensive bug-bounty research"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.setuptools]
+packages = ["backend"]

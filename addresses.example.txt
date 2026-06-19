@@ -1,0 +1,12 @@
+# One address per line. Optional label after a comma: 0xADDRESS,my label
+# These MVP test targets exercise the pipeline (per the build spec):
+
+# USDC proxy — exercises proxy resolver + source fetch (EIP-1967 transparent proxy)
+0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48,USDC proxy
+
+# Example governance/timelock target — exercises governance + timelock detectors
+# (replace with the ScrollOwner / ProxyAdmin address you want to triage)
+# 0x...,Scroll ProxyAdmin
+
+# A known-safe contract — verify the scanner does NOT invent criticals
+# 0x...,known safe

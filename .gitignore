@@ -1,0 +1,30 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+
+# Env / secrets
+.env
+
+# Database
+*.db
+bulkauditai.db
+
+# Scan outputs / evidence
+backend/outputs/scans/*
+!backend/outputs/scans/.gitkeep
+
+# solc-select cache (if local)
+.solc-select/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

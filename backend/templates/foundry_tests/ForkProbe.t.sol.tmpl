@@ -1,0 +1,31 @@
+// SPDX-License-Identifier: MIT
+// AUTO-GENERATED READ-ONLY FORK PROBE for {{CONTRACT}} — DO NOT BROADCAST.
+// {{NOTES}}
+//
+// SAFETY: this test must only ever perform read-only / staticcall checks against
+// a LOCAL fork. Never add vm.broadcast, private keys, or cast send.
+pragma solidity ^0.8.19;
+
+import "forge-std/Test.sol";
+
+interface ITarget {
+    function owner() external view returns (address);
+    function admin() external view returns (address);
+    function implementation() external view returns (address);
+}
+
+contract ForkProbe is Test {
+    address constant TARGET = {{TARGET}};
+
+    function test_readonly_probe() public {
+        uint256 size;
+        address t = TARGET;
+        assembly { size := extcodesize(t) }
+        emit log_named_uint("codesize", size);
+        assertTrue(size > 0, "target has no code on fork");
+
+        // Example read-only checks (uncomment / extend as needed):
+        // try ITarget(TARGET).owner() returns (address o) { emit log_named_address("owner", o); } catch {}
+        // try ITarget(TARGET).implementation() returns (address i) { emit log_named_address("impl", i); } catch {}
+    }
+}

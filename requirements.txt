@@ -1,0 +1,23 @@
+# BulkAuditAI backend dependencies
+fastapi>=0.110
+uvicorn[standard]>=0.27
+sqlalchemy>=2.0
+pydantic>=2.6
+pydantic-settings>=2.1
+python-dotenv>=1.0
+aiofiles>=23.2
+httpx>=0.27
+web3>=6.15
+eth-utils>=4.0
+requests>=2.31
+pandas>=2.1
+
+# Security tools (installed in the venv; may also be installed system-wide).
+# These are optional at runtime — the app degrades gracefully if missing.
+slither-analyzer>=0.10
+mythril>=0.24
+semgrep>=1.60
+solc-select>=1.0
+
+# Dev / tests
+pytest>=8.0
