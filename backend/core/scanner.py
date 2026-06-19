@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import logging
+import re
 from collections import defaultdict
 from pathlib import Path
 
@@ -209,6 +210,7 @@ async def run_scan_pipeline(scan_id: int, mgr: ScanManager) -> None:
         scan = db.get(Scan, scan_id)
         if scan is None:
             return
+        scan.completed_targets = _count_done(db, scan_id)
         _recompute_scan_counts(db, scan)
         if mgr.is_cancelled(scan_id):
             scan.status = ScanStatus.CANCELLED
@@ -507,7 +509,7 @@ async def process_target(
                 _log(scan_id, f"[{address}] ORACLE MANIPULATION CONFIRMED: {sim.get('note')}")
 
         packet = evidence_mod.build_ai_packet(ctx, cand, score)
-        slug = f"{cand.detector}_{i}_{(cand.affected_functions or ['x'])[0]}"
+        slug = _finding_slug(cand.detector, i, (cand.affected_functions or [None])[0])
         evidence_mod.write_finding_evidence(workspace, slug, cand, packet)
 
         ai_result = None
@@ -516,9 +518,12 @@ async def process_target(
             ai_result = await asyncio.to_thread(
                 review_finding, packet, prompt_save_path=prompt_path
             )
-            (workspace["ai"] / f"{slug}.response.json").write_text(
-                _safe_json(ai_result.response_json), encoding="utf-8"
-            )
+            try:
+                (workspace["ai"] / f"{slug}.response.json").write_text(
+                    _safe_json(ai_result.response_json), encoding="utf-8"
+                )
+            except OSError as exc:  # pragma: no cover - defensive
+                logger.warning("ai response write failed: %s", exc)
 
         _persist_finding(scan_id, target_id, cand, score, ai_result, workspace)
 
@@ -574,6 +579,13 @@ def _count_done(db, scan_id: int) -> int:
 def _toggle(toggles: dict, key: str, default: bool) -> bool:
     val = toggles.get(key)
     return default if val is None else bool(val)
+
+
+def _finding_slug(detector: str, index: int, fn: str | None) -> str:
+    """Filesystem-safe slug for a finding's evidence/AI files. Function names from
+    the LLM reasoner can contain '/', spaces, etc. that would break the path."""
+    raw = f"{detector}_{index}_{fn or 'x'}"
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", raw)[:120]
 
 
 def _pick_main_source(source_dir: Path, contract_name: str | None) -> Path | None:

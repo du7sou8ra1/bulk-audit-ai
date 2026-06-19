@@ -5,7 +5,16 @@ Run: PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest tests/test_scan_manager.py -q
 """
 import asyncio
 
-from backend.core.scanner import manager
+from backend.core.scanner import _finding_slug, manager
+
+
+def test_finding_slug_is_path_safe():
+    # the LLM reasoner can return a function name containing '/' and spaces, which
+    # must NOT leak into the evidence/AI file path (this crashed a real scan).
+    s = _finding_slug("invariant_reasoner", 6, "processRollup / processRollupProof")
+    assert "/" not in s and " " not in s
+    assert s == "invariant_reasoner_6_processRollup___processRollupProof"
+    assert _finding_slug("zk_verifier", 0, None) == "zk_verifier_0_x"
 
 
 def test_start_scan_from_worker_thread(monkeypatch):
