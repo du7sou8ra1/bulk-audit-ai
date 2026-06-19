@@ -131,15 +131,35 @@ def review_finding(packet: dict, *, prompt_save_path: Path | None = None) -> AIR
         except OSError:
             pass
 
-    try:
+    url = f"{s.deepseek_base_url.rstrip('/')}/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {s.deepseek_api_key}",
+        # Optional OpenRouter attribution headers (harmless on api.deepseek.com).
+        "HTTP-Referer": "https://github.com/bulk-audit-ai",
+        "X-Title": "BulkAuditAI",
+    }
+
+    def _post(body: dict):
         with httpx.Client(timeout=120) as client:
-            resp = client.post(
-                f"{s.deepseek_base_url.rstrip('/')}/chat/completions",
-                headers={"Authorization": f"Bearer {s.deepseek_api_key}"},
-                json=request_body,
-            )
+            resp = client.post(url, headers=headers, json=body)
             resp.raise_for_status()
-            data = resp.json()
+            return resp.json()
+
+    try:
+        data = _post(request_body)
+    except httpx.HTTPStatusError as exc:
+        # Some OpenRouter providers reject `response_format` (4xx). Retry once
+        # without it — we still parse JSON out of the content defensively.
+        if 400 <= exc.response.status_code < 500 and "response_format" in request_body:
+            body2 = {k: v for k, v in request_body.items() if k != "response_format"}
+            try:
+                data = _post(body2)
+            except Exception as exc2:
+                result.error = f"DeepSeek request failed (no json-mode retry): {type(exc2).__name__}: {exc2}"
+                return result
+        else:
+            result.error = f"DeepSeek request failed: HTTP {exc.response.status_code}: {exc.response.text[:300]}"
+            return result
     except Exception as exc:
         result.error = f"DeepSeek request failed: {type(exc).__name__}: {exc}"
         return result
