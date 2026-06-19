@@ -24,11 +24,11 @@ from .database import SessionLocal, init_db
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     init_db()
-    _recover_interrupted_scans()
-    # Capture the running loop so SYNC endpoints (run in a threadpool) can schedule
+    # Capture the running loop FIRST so sync endpoints AND recovery can schedule
     # scans onto it — fixes "no running event loop" on POST /api/scans.
     from .core.scanner import manager
     manager.set_loop(asyncio.get_running_loop())
+    _recover_interrupted_scans()
     # Start the "before-drain" monitor if enabled (watches upgrades/codehash changes).
     if get_settings().enable_monitor:
         from .core.monitor import monitor
@@ -80,12 +80,15 @@ def create_app() -> FastAPI:
 
 
 def _recover_interrupted_scans() -> None:
-    """Mark scans left RUNNING by a previous process as failed (no zombie state)."""
+    """Mark scans left RUNNING by a previous process as failed, and RE-START any
+    scan still QUEUED (e.g. created when an earlier error blocked its launch), so
+    orphaned scans self-heal instead of sitting queued forever."""
+    from sqlalchemy import select
+
+    from .core.scanner import manager
     from .models import Scan, ScanStatus, utcnow
 
     with SessionLocal() as db:
-        from sqlalchemy import select
-
         stuck = db.scalars(select(Scan).where(Scan.status == ScanStatus.RUNNING)).all()
         for s in stuck:
             s.status = ScanStatus.FAILED
@@ -93,6 +96,11 @@ def _recover_interrupted_scans() -> None:
             s.finished_at = utcnow()
         if stuck:
             db.commit()
+        queued = [
+            s.id for s in db.scalars(select(Scan).where(Scan.status == ScanStatus.QUEUED)).all()
+        ]
+    for scan_id in queued:
+        manager.start_scan(scan_id)
 
 
 app = create_app()
