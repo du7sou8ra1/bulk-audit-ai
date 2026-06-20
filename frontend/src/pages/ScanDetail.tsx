@@ -172,6 +172,11 @@ export default function ScanDetail() {
     findingsByTarget[f.target_id] = (findingsByTarget[f.target_id] || 0) + 1
   }
 
+  // Findings carry a numeric target_id, not an address — resolve the real
+  // contract address from the scan's target list for display.
+  const addrByTarget: Record<string, string> = {}
+  for (const t of scan.targets) addrByTarget[t.id] = t.address
+
   const exportBtn = (fmt: 'json' | 'csv' | 'md' | 'zip', label: string) => (
     <a
       key={fmt}
@@ -364,7 +369,7 @@ export default function ScanDetail() {
                       to={`/targets/${f.target_id}`}
                       className="font-mono text-xs text-emerald-400 hover:underline"
                     >
-                      {shortAddr(f.target_id)}
+                      {shortAddr(addrByTarget[f.target_id] ?? `#${f.target_id}`)}
                     </Link>
                   </td>
                   <td className="td font-mono text-xs text-slate-400">

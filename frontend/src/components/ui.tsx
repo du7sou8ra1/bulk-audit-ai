@@ -49,10 +49,13 @@ export function EmptyState({ children }: { children: ReactNode }) {
   )
 }
 
-export function shortAddr(addr: string | null | undefined) {
-  if (!addr) return '—'
-  if (addr.length <= 14) return addr
-  return `${addr.slice(0, 8)}…${addr.slice(-6)}`
+export function shortAddr(addr: string | number | null | undefined) {
+  // Coerce defensively: callers sometimes pass a numeric id (e.g. target_id),
+  // and calling string methods on a number throws and blanks the whole page.
+  if (addr === null || addr === undefined || addr === '') return '—'
+  const s = String(addr)
+  if (s.length <= 14) return s
+  return `${s.slice(0, 8)}…${s.slice(-6)}`
 }
 
 export function fmtDate(value: string | null | undefined) {
