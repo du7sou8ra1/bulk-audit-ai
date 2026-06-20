@@ -691,35 +691,58 @@ class ZkVerifierDetector(Detector):
         # The Aztec Connect $2.19M bug: numTxs (decoded from calldata, no
         # constraint) bounds the L1 settlement loop while the proof commits a
         # larger fixed range -> proof-committed gap slots go unvalidated on L1.
+        # NOT gated on is_view: the real Aztec Decoder.decodeProof is `internal
+        # view` and that is exactly where `div(numTxs, numTxsPerRollup)` lives.
+        # Context also recognizes the bare-assembly idioms (SHA256 precompile
+        # staticcall to 0x02, the NUM_REAL_TRANSACTIONS calldata offset) so it
+        # fires on a generically-named internal decoder, not just friendly names.
         settle_ctx = bool(
             re.search(
                 r"processrollup|processblock|processbatch|executebatch|"
-                r"processrollupproof|decodeproof|settle|processdeposit",
+                r"processrollupproof|decodeproof|decoderollup|_?decode\w*proof|"
+                r"settle|processdeposit|processwithdraw",
                 name, re.I,
             )
             or re.search(r"publicinputshash|sha256\s*\(|verif", body, re.I)
+            or re.search(r"staticcall\s*\([^)]*0x0?2\b", body, re.I)
+            or re.search(
+                r"num_?real_?transactions|num_real_transactions_offset|rollup_header_length",
+                body, re.I,
+            )
         )
-        if settle_ctx and not is_view:
+        if settle_ctx:
+            # Optional leading underscore: the real internal loop bounds settlement
+            # via `mul(_numTxs, TX_PUBLIC_INPUT_LENGTH)` (underscore-prefixed param).
             mcount = re.search(
-                r"\b(num(?:real)?(?:txs|transactions|blocks)|numtxs|numrealtxs|"
-                r"rollupsize|numinnerrollups|batchsize|numblocks)\b",
+                r"(?<![A-Za-z0-9])_?(?:num(?:real)?(?:txs|transactions|blocks)|numtxs|"
+                r"numrealtxs|rollupsize|numinnerrollups|batchsize|numblocks)\b",
                 body, re.I,
             )
             if mcount:
-                cnt = mcount.group(1)
+                cnt = mcount.group(0)
                 bounds_proc = bool(
                     re.search(re.escape(cnt) + r"\s*[/*]", body, re.I)
                     or re.search(r"(?:div|mul)\s*\(\s*" + re.escape(cnt), body, re.I)
                     or re.search(r"<\s*[\w.]*" + re.escape(cnt) + r"\b", body, re.I)
                     or re.search(re.escape(cnt) + r"\s*[<>]", body, re.I)
                 )
-                bound_to_proof = bool(
+                # Require an actual loop / buffer-size use so a pure arithmetic
+                # getter (`return numTxs/2`) with no loop stays silent.
+                has_loop_or_size = bool(
                     re.search(
-                        r"require\s*\(\s*[\w.]*" + re.escape(cnt) + r"\s*(==|<=)", body, re.I
+                        r"\bfor\b|\bwhile\b|div\(|mul\(|calldatacopy|mstore|\[\s*"
+                        + re.escape(cnt),
+                        body, re.I,
                     )
+                )
+                # Binding may be enforced in a CALLER (the count is decoded in one
+                # internal fn, bounded in another) — so also scan the whole file.
+                bound_to_proof = bool(
+                    re.search(r"require\s*\(\s*[\w.]*" + re.escape(cnt) + r"\s*(==|<=)", body, re.I)
+                    or re.search(r"require\s*\(\s*[\w.]*" + re.escape(cnt) + r"\s*(==|<=)", filesrc, re.I)
                     or _word(cnt).search(_binding_text(body))
                 )
-                if bounds_proc and not bound_to_proof:
+                if bounds_proc and has_loop_or_size and not bound_to_proof:
                     out.append(self._mk(
                         "settlement_count_not_bound_to_proof",
                         f"Settlement bounded by a caller-supplied count not bound to "

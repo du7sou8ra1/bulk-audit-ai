@@ -515,3 +515,104 @@ contract RollupProcessorV2 {
   function _processRollupProof(bytes memory, uint256) internal {}
 }"""
     assert "settlement_count_not_bound_to_proof" in _fired(src)
+
+
+def test_settlement_count_fires_on_pure_assembly_decodeproof():
+    """Real Aztec Decoder.decodeProof: `internal pure`, numTxs decoded in assembly,
+    div(numTxs, numTxsPerRollup) sizes the loop, SHA256 precompile builds the hash,
+    no require binding. The view/pure gate previously dropped this entirely — it
+    must now fire deterministically (this is the implementation-scan miss)."""
+    pos = """pragma solidity ^0.8.0;
+contract Decoder {
+  uint256 internal constant NUM_REAL_TRANSACTIONS_OFFSET = 4516;
+  uint256 internal constant TX_PUBLIC_INPUT_LENGTH = 0xc0;
+  function decodeProof() internal pure returns (bytes memory proofData, uint256 numTxs, uint256 publicInputsHash) {
+    assembly {
+      let inPtr := proofData
+      numTxs := and(calldataload(add(inPtr, NUM_REAL_TRANSACTIONS_OFFSET)), 0xffffffff)
+      let rollupSize := calldataload(add(inPtr, 0x20))
+      let numInnerRollups := calldataload(add(inPtr, 0x40))
+      let numTxsPerRollup := div(rollupSize, numInnerRollups)
+      let numFilledBlocks := div(numTxs, numTxsPerRollup)
+      let numNotEmptyInnerRollups := div(numTxs, numInnerRollups)
+      let endPtr := add(proofData, mul(numNotEmptyInnerRollups, 0x20))
+      for {} lt(proofData, endPtr) { proofData := add(proofData, 0x20) } {
+        pop(staticcall(gas(), 0x02, inPtr, 0x40, 0x00, 0x20))
+      }
+      publicInputsHash := mload(0x00)
+    }
+  }
+}"""
+    neg = """pragma solidity ^0.8.0;
+contract Decoder {
+  uint256 internal constant NUM_REAL_TRANSACTIONS_OFFSET = 4516;
+  function provenTxCount(uint256) internal pure returns (uint256) { return 0; }
+  function decodeProof() internal pure returns (bytes memory proofData, uint256 numTxs, uint256 publicInputsHash) {
+    uint256 rollupSize; uint256 numInnerRollups;
+    assembly {
+      let inPtr := proofData
+      numTxs := and(calldataload(add(inPtr, NUM_REAL_TRANSACTIONS_OFFSET)), 0xffffffff)
+      rollupSize := calldataload(add(inPtr, 0x20))
+      numInnerRollups := calldataload(add(inPtr, 0x40))
+      pop(staticcall(gas(), 0x02, inPtr, 0x40, 0x00, 0x20))
+    }
+    require(numTxs == provenTxCount(rollupSize), "COUNT_NOT_PROVEN");
+    uint256 numTxsPerRollup = rollupSize / numInnerRollups;
+    uint256 numFilledBlocks = numTxs / numTxsPerRollup;
+    publicInputsHash = numFilledBlocks;
+  }
+}"""
+    assert "settlement_count_not_bound_to_proof" in _fired(pos)
+    assert "settlement_count_not_bound_to_proof" not in _fired(neg)
+
+
+def test_settlement_count_fires_on_internal_underscore_loop():
+    """Real internal processDepositsAndWithdrawals bounds the settlement loop via
+    mul(_numTxs, TX_PUBLIC_INPUT_LENGTH) using the underscore-prefixed param, while
+    the require binding lives in the CALLER processRollupProof. The count regex
+    previously missed `_numTxs`; the file-wide require check must suppress the
+    negative even though the binding is in a different function."""
+    pos = """pragma solidity ^0.8.0;
+contract RollupProcessor {
+  uint256 internal constant TX_PUBLIC_INPUT_LENGTH = 0xc0;
+  function verifyProofAndUpdateState(bytes memory p, uint256 h) internal returns (uint256) { return p.length + h; }
+  function processRollupProof(bytes memory _proofData, bytes memory _signatures, uint256 _numTxs, uint256 _publicInputsHash) internal {
+    verifyProofAndUpdateState(_proofData, _publicInputsHash);
+    processDepositsAndWithdrawals(_proofData, _numTxs, _signatures);
+  }
+  function processDepositsAndWithdrawals(bytes memory _proofData, uint256 _numTxs, bytes memory _signatures) internal {
+    assembly {
+      let proofDataPtr := add(_proofData, 0x20)
+      let end := add(proofDataPtr, mul(_numTxs, TX_PUBLIC_INPUT_LENGTH))
+      for {} lt(proofDataPtr, end) { proofDataPtr := add(proofDataPtr, TX_PUBLIC_INPUT_LENGTH) } {
+        let amount := mload(add(proofDataPtr, 0x40))
+        let to := mload(add(proofDataPtr, 0x60))
+        pop(call(gas(), to, amount, 0, 0, 0, 0))
+      }
+    }
+  }
+}"""
+    neg = """pragma solidity ^0.8.0;
+contract RollupProcessor {
+  uint256 internal constant TX_PUBLIC_INPUT_LENGTH = 0xc0;
+  function verifyProofAndUpdateState(bytes memory p, uint256 h) internal returns (uint256) { return p.length + h; }
+  function provenTxCount(bytes memory) internal pure returns (uint256) { return 0; }
+  function processRollupProof(bytes memory _proofData, bytes memory _signatures, uint256 _numTxs, uint256 _publicInputsHash) internal {
+    verifyProofAndUpdateState(_proofData, _publicInputsHash);
+    require(_numTxs <= provenTxCount(_proofData), "COUNT_NOT_BOUND");
+    processDepositsAndWithdrawals(_proofData, _numTxs, _signatures);
+  }
+  function processDepositsAndWithdrawals(bytes memory _proofData, uint256 _numTxs, bytes memory _signatures) internal {
+    assembly {
+      let proofDataPtr := add(_proofData, 0x20)
+      let end := add(proofDataPtr, mul(_numTxs, TX_PUBLIC_INPUT_LENGTH))
+      for {} lt(proofDataPtr, end) { proofDataPtr := add(proofDataPtr, TX_PUBLIC_INPUT_LENGTH) } {
+        let amount := mload(add(proofDataPtr, 0x40))
+        let to := mload(add(proofDataPtr, 0x60))
+        pop(call(gas(), to, amount, 0, 0, 0, 0))
+      }
+    }
+  }
+}"""
+    assert "settlement_count_not_bound_to_proof" in _fired(pos)
+    assert "settlement_count_not_bound_to_proof" not in _fired(neg)
