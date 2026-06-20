@@ -63,7 +63,10 @@ _PROFILE_MAP: dict[str, list[type[Detector]]] = {
         AccessControlDetector,
     ],
     "oracle-focused": [OracleManipulationDetector, TokenLogicDetector, ReentrancyDetector],
-    "zk-focused": MVP_DETECTORS + [ZkVerifierDetector],
+    "zk-focused": MVP_DETECTORS + [
+        ZkVerifierDetector, ReentrancyDetector, BridgeAccountingDetector,
+        SignatureReplayDetector,
+    ],
     "privacy-pool-focused": MVP_DETECTORS + [PrivacyPoolDetector],
     "bridge-focused": MVP_DETECTORS + [BridgeAccountingDetector, SignatureReplayDetector],
 }

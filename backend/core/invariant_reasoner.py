@@ -54,6 +54,28 @@ Bug classes to weigh explicitly (report only if genuinely plausible in THIS code
 - decimal/precision scaling that mis-prices across token decimals.
 - reentrancy via external call before state effect (only if a real cross-fn path).
 
+ZK FORCED-EXIT / SETTLEMENT BINDING (give this special attention on any
+escapeHatch/forcedExit/desert/withdraw/executeBatch path): do NOT treat the
+presence of a verify()/verifyProof()/require(proof_verified) call as evidence the
+release is safe — the Aztec 17 Jun 2026 drain (1,158 ETH) had a working verify().
+For every value-releasing sink (.transfer, .call{value:}, _mint, safeTransfer,
+increaseBalanceToWithdraw, _credit), name the exact symbol that determines (a) the
+AMOUNT, (b) the RECIPIENT, (c) any FEE/relayer cut, (d) the ASSET/pool. For each,
+decide: is it a caller-chosen parameter / calldata-struct field, or is it
+re-derived from on-chain verified state (storage keyed by a proof-committed
+commitment/nullifier, or a value re-hashed into the public-input vector that
+verify() checked)? It is BOUND only if it appears inside the public-input array /
+abi.encode(Packed) preimage / commitment passed to verify() (possibly via a helper
+like createExitCommitment/_verifyPubdata whose result flows into that array) OR is
+read from storage indexed by a proof-derived key. A single-element public-input
+vector that omits the amount or recipient is a strong UNBINDING signal. Also check:
+is the nullifier/proofId marked consumed BEFORE the release (replay), keyed over
+asset/denomination (cross-asset replay), and could a committed-but-unproven root be
+anchored by this withdrawal (commit/prove decoupling)? Conclude each release as
+BOUND (cite the commitment field), UNBOUND-LEAD (cite the free param + absent
+constraint), or REQUIRES-CIRCUIT (binding could only exist in public-input layout
+you cannot see) — emit UNBOUND-LEAD as a settlement_binding hypothesis.
+
 Return ONLY JSON:
 {
  "model": {"accounting": "...", "trust": "...", "invariants": ["..."]},
