@@ -201,4 +201,25 @@ def review_finding(packet: dict, *, prompt_save_path: Path | None = None) -> AIR
             "PoC) in evidence; downgraded from CONFIRMED_CRITICAL. " + result.why_not_higher
         )
 
+    # --- Lead guardrail: a lead_only finding states up-front that it cannot be
+    # confirmed from Solidity (binding may live in the circuit / needs a PoC). It
+    # must NOT be dismissed as FALSE_POSITIVE for lack of confirmation — that is its
+    # expected state. Unless a concrete on-chain control defused it (refuted), floor
+    # it to NEEDS_MORE_INVESTIGATION so a human/ZK auditor sees it. (This is what
+    # buried the real Aztec settlement-boundary finding.) --------------------- #
+    ev = packet.get("evidence", {}) or {}
+    is_lead = bool(ev.get("lead_only") or ev.get("onchain_detectable") == "lead_only")
+    if (
+        is_lead
+        and not ev.get("refuted")
+        and result.classification == Classification.FALSE_POSITIVE
+    ):
+        result.classification = Classification.NEEDS_MORE_INVESTIGATION
+        result.enforced_downgrade = True
+        result.why_not_higher = (
+            "[enforced] lead_only finding cannot be FALSE_POSITIVE without a cited "
+            "on-chain control that defuses it; floored to NEEDS_MORE_INVESTIGATION. "
+            + result.why_not_higher
+        )
+
     return result

@@ -137,6 +137,28 @@ def _to_candidates(parsed: dict, model: dict) -> list[FindingCandidate]:
             conf = 4.0
         conf = min(conf, 6.0)
         fn = str(h.get("function", "")) or None
+        bug_class = str(h.get("bug_class", "other"))
+        # Settlement/proof-binding hypotheses are unconfirmable from Solidity alone
+        # (the binding lives in the circuit / needs a fork PoC) — tag them lead_only
+        # so the pipeline keeps them at investigation level instead of letting the
+        # refuter/classifier bury them as FALSE_POSITIVE (the Aztec failure mode).
+        is_lead_class = any(
+            t in bug_class.lower()
+            for t in ("settlement", "binding", "boundary", "proof", "replay")
+        )
+        evidence = {
+            "source": "invariant_reasoner",
+            "bug_class": bug_class,
+            "unprivileged": bool(h.get("unprivileged", False)),
+            # NOTE: governance_controlled flips scoring's -3; set when the
+            # model itself says this is NOT unprivileged.
+            "governance_controlled": not bool(h.get("unprivileged", True)),
+            "model_invariants": (model or {}).get("invariants", []),
+            "needs_poc": True,
+        }
+        if is_lead_class:
+            evidence["lead_only"] = True
+            evidence["onchain_detectable"] = "lead_only"
         out.append(
             FindingCandidate(
                 detector="invariant_reasoner",
@@ -145,16 +167,7 @@ def _to_candidates(parsed: dict, model: dict) -> list[FindingCandidate]:
                 impact_score=impact,
                 confidence_score=conf,
                 severity_candidate=sev if sev in ("critical", "high", "medium", "low") else "medium",
-                evidence={
-                    "source": "invariant_reasoner",
-                    "bug_class": str(h.get("bug_class", "other")),
-                    "unprivileged": bool(h.get("unprivileged", False)),
-                    # NOTE: governance_controlled flips scoring's -3; set when the
-                    # model itself says this is NOT unprivileged.
-                    "governance_controlled": not bool(h.get("unprivileged", True)),
-                    "model_invariants": (model or {}).get("invariants", []),
-                    "needs_poc": True,
-                },
+                evidence=evidence,
                 next_tests=[str(h.get("what_would_confirm", ""))][:1] or [],
                 affected_functions=[fn] if fn else [],
             )

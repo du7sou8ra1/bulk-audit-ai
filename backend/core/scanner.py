@@ -47,7 +47,7 @@ from .invariant_reasoner import run_invariant_reasoner
 from .onchain import OnchainClient
 from .proxy_resolver import resolve_proxy
 from .refuter import refute as refute_finding
-from .scoring import score_finding
+from .scoring import score_finding, mark_corroboration
 from .source_fetcher import (
     SourcePackage,
     fetch_source,
@@ -381,6 +381,10 @@ async def process_target(
         except Exception as exc:
             logger.warning("invariant reasoner failed on %s: %s", address, exc)
             _log(scan_id, f"[{address}] invariant reasoner error: {exc}")
+
+    # Cross-signal corroboration: mark findings that >=2 independent detectors /
+    # the reasoner flagged on the same function (scoring then bumps confidence).
+    mark_corroboration(candidates)
 
     # --- Score + (optional) refute + fork PoC + AI review + persist ------- #
     _set_target_status(scan_id, target_id, TargetStatus.AI)

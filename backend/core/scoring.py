@@ -130,6 +130,15 @@ def score_finding(
         conf += 2
         notes.append("+2 fork PoC: unprivileged call succeeded on a local fork")
 
+    # +2 cross-signal corroboration: an independent detector / the reasoner flagged
+    # the SAME function. Two independent signals agreeing is much stronger than one.
+    if ev.get("corroborated"):
+        conf += 2
+        by = ev.get("corroborated_by") or []
+        notes.append(
+            "+2 corroborated on the same function by: " + ", ".join(map(str, by))[:120]
+        )
+
     # Adversarial refutation (gap #3): an independent skeptic read the code and
     # disproved exploitability -> hard-cap so it cannot reach a critical bucket.
     refutation = ev.get("refutation") or {}
@@ -161,10 +170,41 @@ def score_finding(
         conf = 0.0
         notes.append("suppressed: matches a user-marked false-positive fingerprint")
 
+    # Lead-only findings encode "real risk surface, NOT confirmable from Solidity"
+    # (the binding may live in the off-chain circuit / needs a fork PoC). "Cannot
+    # confirm" is their EXPECTED state, not a refutation — so unless a CONCRETE
+    # on-chain control defused them (refuted), keep a high-impact lead visible at
+    # the investigation floor instead of letting low confidence bury it as info/FP.
+    # This is exactly why the Aztec settlement-boundary lead was wrongly hidden.
+    is_lead = bool(ev.get("lead_only") or ev.get("onchain_detectable") == "lead_only")
+    if is_lead and not suppressed and not ev.get("refuted") and impact >= 7:
+        conf = max(conf, 3.0)
+        notes.append(
+            "lead_only floor: unconfirmable from Solidity and not concretely "
+            "refuted — kept at investigation level (a human/ZK auditor must look)"
+        )
+
     conf = _clamp(conf)
-    classification = (
-        Classification.FALSE_POSITIVE if suppressed else _classify(impact, conf)
-    )
+    if suppressed:
+        classification = Classification.FALSE_POSITIVE
+    else:
+        classification = _classify(impact, conf)
+        if is_lead and not ev.get("refuted"):
+            # Floor: keep a high-impact, un-refuted lead at investigation level
+            # rather than letting low confidence bury it as info/FP.
+            if impact >= 7 and classification in (
+                Classification.LOW_OR_INFO,
+                Classification.FALSE_POSITIVE,
+            ):
+                classification = Classification.NEEDS_MORE_INVESTIGATION
+            # Ceiling: a lead is unconfirmable from Solidity, so it never claims
+            # more than "needs investigation" WITHOUT a passing PoC — corroboration
+            # raises confidence (visibility/sort), not the verdict.
+            if not ev.get("poc_passed") and classification in (
+                Classification.CONFIRMED_CRITICAL,
+                Classification.LIKELY_CRITICAL_NEEDS_POC,
+            ):
+                classification = Classification.NEEDS_MORE_INVESTIGATION
     return ScoreResult(
         impact_score=impact,
         confidence_score=conf,
@@ -173,3 +213,32 @@ def score_finding(
         classification=classification,
         score_notes=notes,
     )
+
+
+def mark_corroboration(candidates: list) -> None:
+    """Cross-signal agreement pass (mutates evidence in place).
+
+    If >=2 DISTINCT detectors / the reasoner flag the SAME affected function, mark
+    each of those candidates ``corroborated`` (scoring then bumps confidence).
+    Independent corroboration is one of the strongest signals that a lead is real
+    rather than noise — e.g. zk_verifier's settlement-boundary rule and the
+    invariant_reasoner both landing on the same settlement function.
+    """
+    from collections import defaultdict
+
+    by_fn: dict[str, set] = defaultdict(set)
+    cands_by_fn: dict[str, list] = defaultdict(list)
+    for c in candidates:
+        for fn in (getattr(c, "affected_functions", None) or []):
+            if not fn:
+                continue
+            key = str(fn).strip().lower()
+            by_fn[key].add(c.detector)
+            cands_by_fn[key].append(c)
+    for key, dets in by_fn.items():
+        if len(dets) >= 2:
+            for c in cands_by_fn[key]:
+                others = sorted(d for d in dets if d != c.detector)
+                if others:
+                    c.evidence["corroborated"] = True
+                    c.evidence["corroborated_by"] = others

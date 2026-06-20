@@ -43,7 +43,23 @@ Return ONLY JSON:
  "refutation": "the single strongest argument AGAINST exploitability (cite the code)",
  "residual_severity": "critical|high|medium|low|info|none",
  "in_scope": true|false,
+ "concrete_mitigation": true|false,
  "reasoning": "brief"}"""
+
+# Appended for lead_only findings (binding may live off-chain / needs a fork PoC).
+_LEAD_ADDENDUM = """
+
+THIS CANDIDATE IS A LEAD: the detector has ALREADY determined it cannot be confirmed
+from Solidity alone — the binding may live in the off-chain circuit, or confirming it
+needs a fork PoC. Therefore "I cannot confirm it", "it depends on the circuit",
+"needs a PoC", or "the proof probably constrains it" are NOT refutations — they are
+the EXPECTED state of this finding and must NOT, on their own, set is_real=false.
+You may treat the lead as defused ONLY when you can cite a CONCRETE on-chain control
+present in the slice that actually neutralizes it: an equality/range require binding
+the value or count to the proof-committed quantity, a hash-compare against a
+committed value, or an access modifier blocking unprivileged callers. If no such
+concrete control exists, the lead SURVIVES for human / circuit investigation.
+Set "concrete_mitigation": true ONLY if you cited such a control; otherwise false."""
 
 
 def refute(ctx: TargetContext, candidate: FindingCandidate, cg: CallGraph | None = None) -> dict:
@@ -52,6 +68,10 @@ def refute(ctx: TargetContext, candidate: FindingCandidate, cg: CallGraph | None
     if not llm_available():
         candidate.evidence.setdefault("refutation", {"attempted": False, "reason": "llm unavailable"})
         return verdict
+
+    ev0 = candidate.evidence or {}
+    is_lead = bool(ev0.get("lead_only") or ev0.get("onchain_detectable") == "lead_only")
+    system = _SYSTEM + (_LEAD_ADDENDUM if is_lead else "")
 
     cg = cg or CallGraph.build(ctx.source_files)
     fn = (candidate.affected_functions or [None])[0]
@@ -72,7 +92,7 @@ def refute(ctx: TargetContext, candidate: FindingCandidate, cg: CallGraph | None
         "contract": ctx.contract_name or ctx.address,
         "code_slice": code_slice,
     }
-    res = chat_json(_SYSTEM, payload, timeout=180)
+    res = chat_json(system, payload, timeout=180)
     if res.error or not res.parsed:
         candidate.evidence.setdefault("refutation", {"attempted": True, "error": res.error})
         return {**verdict, "attempted": True, "error": res.error}
@@ -82,17 +102,25 @@ def refute(ctx: TargetContext, candidate: FindingCandidate, cg: CallGraph | None
     in_scope = bool(p.get("in_scope", True))
     refutation = str(p.get("refutation", ""))[:2000]
     residual = str(p.get("residual_severity", "")).lower()
+    concrete = bool(p.get("concrete_mitigation", False))
 
     candidate.evidence["refutation"] = {
         "attempted": True,
         "is_real": is_real,
         "in_scope": in_scope,
         "residual_severity": residual,
+        "concrete_mitigation": concrete,
         "refutation": refutation,
         "reasoning": str(p.get("reasoning", ""))[:1500],
     }
-    # A finding the skeptic killed is flagged so scoring caps it hard.
-    if (not is_real) or (not in_scope) or residual in ("none", "info"):
+    # A finding the skeptic killed is flagged so scoring caps it hard. A LEAD is
+    # only killed by a CITED on-chain control — never by "can't confirm" (that is
+    # its expected state). Non-leads keep the original is_real/in_scope/residual gate.
+    if is_lead:
+        if concrete:
+            candidate.evidence["refuted"] = True
+            candidate.evidence["refuted_concrete"] = True
+    elif (not is_real) or (not in_scope) or residual in ("none", "info"):
         candidate.evidence["refuted"] = True
 
     return {
