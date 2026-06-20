@@ -396,6 +396,59 @@ contract Exit { IV v;
 }""",
     ),
     (
+        "settlement_count_not_bound_to_proof",
+        """pragma solidity ^0.8.0;
+contract Rollup { uint256 constant TXS_PER_ROLLUP = 28;
+  function verify(bytes memory p, bytes32 h) internal returns(bool){ return p.length>0; }
+  function decodeProof(bytes calldata d) internal pure returns(bytes memory, uint256, bytes32){ return (d, 1, bytes32(0)); }
+  function processRollup(bytes calldata proofData, bytes calldata sigs) external {
+    (bytes memory pd, uint256 numTxs, bytes32 publicInputsHash) = decodeProof(proofData);
+    require(verify(pd, publicInputsHash), "bad proof");
+    uint256 numFilledBlocks = numTxs / TXS_PER_ROLLUP;
+    for (uint256 i = 0; i < numFilledBlocks; i++) { _settleBlock(pd, i); }
+  }
+  function _settleBlock(bytes memory, uint256) internal {}
+}""",
+        """pragma solidity ^0.8.0;
+contract Rollup { uint256 constant TXS_PER_ROLLUP = 28;
+  function verify(bytes memory p, bytes32 h) internal returns(bool){ return p.length>0; }
+  function decodeProof(bytes calldata d) internal pure returns(bytes memory, uint256, bytes32){ return (d, 1, bytes32(0)); }
+  function provenTxCount(bytes memory) internal pure returns(uint256){ return 1; }
+  function processRollup(bytes calldata proofData, bytes calldata sigs) external {
+    (bytes memory pd, uint256 numTxs, bytes32 publicInputsHash) = decodeProof(proofData);
+    require(verify(pd, publicInputsHash), "bad proof");
+    require(numTxs == provenTxCount(pd), "count mismatch");
+    uint256 numFilledBlocks = numTxs / TXS_PER_ROLLUP;
+    for (uint256 i = 0; i < numFilledBlocks; i++) { _settleBlock(pd, i); }
+  }
+  function _settleBlock(bytes memory, uint256) internal {}
+}""",
+    ),
+    (
+        "value_extracted_from_proofdata_unbound",
+        """pragma solidity ^0.8.0;
+contract Rollup {
+  function verify(bytes memory p, bytes32 h) internal returns(bool){ return p.length>0; }
+  function extractTotalTxFee(bytes memory) internal pure returns(uint256){ return 1; }
+  function settle(bytes memory proofData, bytes32 publicInputsHash, address payable feeReceiver) internal {
+    require(verify(proofData, publicInputsHash), "bad");
+    uint256 txFee = extractTotalTxFee(proofData);
+    feeReceiver.transfer(txFee);
+  }
+}""",
+        """pragma solidity ^0.8.0;
+contract Rollup {
+  function verify(bytes memory p, bytes32 h) internal returns(bool){ return p.length>0; }
+  function extractTotalTxFee(bytes memory) internal pure returns(uint256){ return 1; }
+  function settle(bytes memory proofData, bytes32 publicInputsHash, address payable feeReceiver) internal {
+    require(verify(proofData, publicInputsHash), "bad");
+    require(sha256(proofData) == publicInputsHash, "unbound");
+    uint256 txFee = extractTotalTxFee(proofData);
+    feeReceiver.transfer(txFee);
+  }
+}""",
+    ),
+    (
         "circuit_soundness_out_of_scope_note",
         """pragma solidity ^0.8.0;
 interface IV { function verifyProof(uint256[8] calldata, uint256[3] calldata) external view returns(bool); }
@@ -442,3 +495,23 @@ contract RollupProcessor {
 }"""
     fired = _fired(src)
     assert "forced_exit_released_value_unbound_to_proof" in fired
+
+
+def test_aztec_connect_numtxs_boundary_surfaces_lead():
+    """The real Aztec Connect $2.19M shape: numTxs decoded from calldata bounds the
+    settlement loop while the proof commits a fixed range, with no
+    require(numTxs == provenCount). Must surface as the settlement-boundary lead."""
+    src = """pragma solidity ^0.8.0;
+contract RollupProcessorV2 {
+  uint256 constant TXS_PER_ROLLUP = 28;
+  function verifyProofData(bytes memory p, bytes32 h) internal returns(bool){ return p.length>0; }
+  function decodeProof(bytes calldata d) internal pure returns(bytes memory, uint256, bytes32){ return (d, 1, bytes32(0)); }
+  function processRollup(bytes calldata, bytes calldata _signatures) external {
+    (bytes memory proofData, uint256 numTxs, bytes32 publicInputsHash) = decodeProof(msg.data);
+    require(verifyProofData(proofData, publicInputsHash), "PROOF_VERIFICATION_FAILED");
+    uint256 numFilledBlocks = numTxs / TXS_PER_ROLLUP;
+    for (uint256 i = 0; i < numFilledBlocks; i++) { _processRollupProof(proofData, i); }
+  }
+  function _processRollupProof(bytes memory, uint256) internal {}
+}"""
+    assert "settlement_count_not_bound_to_proof" in _fired(src)

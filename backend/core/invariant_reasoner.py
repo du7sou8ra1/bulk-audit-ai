@@ -76,6 +76,25 @@ BOUND (cite the commitment field), UNBOUND-LEAD (cite the free param + absent
 constraint), or REQUIRES-CIRCUIT (binding could only exist in public-input layout
 you cannot see) — emit UNBOUND-LEAD as a settlement_binding hypothesis.
 
+ZK SETTLEMENT-BOUNDARY / COUNT MISMATCH (the Aztec Connect $2.19M class — hunt this
+explicitly on processRollup/processBatch/executeBatch/decodeProof/settle paths):
+a count/length/size/index decoded from caller calldata (numTxs, numRealTxs,
+rollupSize, numInnerRollups, batchSize, numBlocks, a loop bound) is used to bound
+the L1 settlement loop, WHILE a SEPARATE, often larger/fixed range is what the ZK
+proof commits to (the sha256/keccak public-inputs hash over the full slot range).
+If there is no on-chain `require(callerCount == provenCount)` AND the gap slots
+beyond the processed range are not forced to a safe value, the proof and the L1
+loop interpret the same calldata differently: proof-committed slots go unprocessed/
+unvalidated on L1, minting unbacked balances. Concretely check: which variable
+bounds the settlement loop? is it the SAME quantity the proof/publicInputsHash
+commits to, or a smaller caller-chosen count? is there any equality check between
+them? Emit this as a settlement_binding hypothesis at HIGH severity when the
+equality check is absent — do NOT down-rate it just because verify() is present and
+the data is hashed; the hash covers the full range, the loop does not. Treat
+"value/count read from proofData via extract*/abi.decode and used in settlement or
+release, with no recompute-and-compare to the committed hash IN THE SAME PATH" as a
+first-class lead, not an afterthought.
+
 Return ONLY JSON:
 {
  "model": {"accounting": "...", "trust": "...", "invariants": ["..."]},

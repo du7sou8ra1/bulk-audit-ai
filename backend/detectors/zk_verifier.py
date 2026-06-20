@@ -42,9 +42,11 @@ COVERAGE_STATEMENT = (
     "spent-check or marked spent after the transfer, Groth16 VK gamma==delta / "
     "zero / placeholder points, unguarded setVerifier, caller-supplied verifier, "
     "unanchored Merkle root, missing field-range check, missing pause/liveness "
-    "gate). Only LEADS (confidence <=5) on proof-to-value binding: whether a "
-    "forced-exit/escapeHatch released amount/recipient/fee is constrained by the "
-    "proof lives partly in the circuit, so Solidity shows the risk surface but "
+    "gate). Only LEADS (confidence <=5) on proof-to-value binding (forced-exit / "
+    "escapeHatch released amount/recipient/fee, values extracted from proofData) "
+    "and on settlement-boundary count binding (whether a caller-supplied tx/slot "
+    "count matches the proof-committed range — the Aztec Connect numTxs class): "
+    "these live partly in the circuit, so Solidity shows the risk surface but "
     "cannot prove exploitability. CANNOT detect circuit-level soundness "
     "(under-constrained signals, witness non-determinism, input packing vs "
     "circuit) — one informational note marks that. A clean scan is NOT a "
@@ -684,6 +686,103 @@ class ZkVerifierDetector(Detector):
                     ],
                     extra={"truncated": tv},
                 ))
+
+        # ---- Rule 21: settlement count not bound to proof (numTxs class) ---- #
+        # The Aztec Connect $2.19M bug: numTxs (decoded from calldata, no
+        # constraint) bounds the L1 settlement loop while the proof commits a
+        # larger fixed range -> proof-committed gap slots go unvalidated on L1.
+        settle_ctx = bool(
+            re.search(
+                r"processrollup|processblock|processbatch|executebatch|"
+                r"processrollupproof|decodeproof|settle|processdeposit",
+                name, re.I,
+            )
+            or re.search(r"publicinputshash|sha256\s*\(|verif", body, re.I)
+        )
+        if settle_ctx and not is_view:
+            mcount = re.search(
+                r"\b(num(?:real)?(?:txs|transactions|blocks)|numtxs|numrealtxs|"
+                r"rollupsize|numinnerrollups|batchsize|numblocks)\b",
+                body, re.I,
+            )
+            if mcount:
+                cnt = mcount.group(1)
+                bounds_proc = bool(
+                    re.search(re.escape(cnt) + r"\s*[/*]", body, re.I)
+                    or re.search(r"(?:div|mul)\s*\(\s*" + re.escape(cnt), body, re.I)
+                    or re.search(r"<\s*[\w.]*" + re.escape(cnt) + r"\b", body, re.I)
+                    or re.search(re.escape(cnt) + r"\s*[<>]", body, re.I)
+                )
+                bound_to_proof = bool(
+                    re.search(
+                        r"require\s*\(\s*[\w.]*" + re.escape(cnt) + r"\s*(==|<=)", body, re.I
+                    )
+                    or _word(cnt).search(_binding_text(body))
+                )
+                if bounds_proc and not bound_to_proof:
+                    out.append(self._mk(
+                        "settlement_count_not_bound_to_proof",
+                        f"Settlement bounded by a caller-supplied count not bound to "
+                        f"the proof: {name} ({cnt})",
+                        f"`{name}` uses `{cnt}` (decoded from caller calldata) to "
+                        f"bound settlement processing, but no require ties `{cnt}` "
+                        "to the number of transactions/slots the ZK proof commits "
+                        "to. This is the Aztec Connect settlement-boundary class: "
+                        "the proof commits a fixed range while L1 processes only the "
+                        "first slots, leaving proof-committed gap slots unvalidated "
+                        "on L1 (unbacked balances that can be withdrawn).",
+                        9.0, 4.0, "high", "lead_only", "settlement_boundary_mismatch",
+                        fn=name,
+                        tests=[
+                            f"Confirm `{cnt}` is constrained to equal the proof-committed slot count.",
+                            "Check whether gap slots beyond the processed range are forced to zero by the circuit.",
+                            f"Fork-test: submit a rollup with a low `{cnt}` but real txs in the gap slots.",
+                        ],
+                        extra={"count_var": cnt},
+                    ))
+
+        # ---- Rule 22: value extracted from proofData, no in-fn hash-bind --- #
+        # The Aztec escapeHatch/transferFee class: a value is read straight out of
+        # caller proofData (extractTotalTxFee/abi.decode) and released, with no
+        # recompute-and-compare of that data against the proof-committed hash here.
+        if not is_view and _VALUE_MOVE_RE.search(body):
+            mex = re.search(
+                r"\b(\w+)\s*=\s*(?:extract\w*|_?decode\w*|abi\.decode)\s*\("
+                r"[^;]*\b(?:proofdata|pubdata|calldata|proof)\b",
+                body, re.I,
+            )
+            if mex:
+                ev_amt = mex.group(1)
+                flows = bool(
+                    re.search(r"\.transfer\s*\([^;]*\b" + re.escape(ev_amt) + r"\b", body, re.I)
+                    or re.search(r"\.call\s*\{\s*value\s*:\s*" + re.escape(ev_amt) + r"\b", body, re.I)
+                    or re.search(r"_?(?:mint|transfer|credit)\w*\s*\([^;]*\b" + re.escape(ev_amt) + r"\b", body, re.I)
+                    or re.search(r"safetransfer\w*\s*\([^;]*\b" + re.escape(ev_amt) + r"\b", body, re.I)
+                )
+                hash_bound = bool(
+                    re.search(r"(keccak256|sha256)\s*\([^;]*\)\s*(==|!=)", body, re.I)
+                    or re.search(r"(==|!=)\s*[\w.]*(publicinputshash|commitment|operationshash)", body, re.I)
+                )
+                if flows and not hash_bound:
+                    out.append(self._mk(
+                        "value_extracted_from_proofdata_unbound",
+                        f"Value extracted from proofData and released with no "
+                        f"in-function hash-binding: {name} ({ev_amt})",
+                        f"`{name}` reads `{ev_amt}` directly out of caller-supplied "
+                        "proofData and moves value with it, with no recompute-and-"
+                        "compare of a hash of that data against the proof-committed / "
+                        "public-inputs hash in this function. If the extracted offset "
+                        "lies outside the proof-signed region, the value is unbound "
+                        "(the Aztec transferFee/extractTotalTxFee class).",
+                        9.0, 4.0, "high", "lead_only", "proof-to-value-binding",
+                        fn=name,
+                        tests=[
+                            f"Confirm the offset `{ev_amt}` is read from lies within the proof-committed/signed region.",
+                            "Trace whether a sibling function binds this data via sha256/keccak to publicInputsHash.",
+                            f"Fork-test: inflate `{ev_amt}` beyond the signed region and check payout.",
+                        ],
+                        extra={"extracted_value": ev_amt},
+                    ))
 
         return out
 
