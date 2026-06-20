@@ -3,6 +3,20 @@ from __future__ import annotations
 
 from .access_control import AccessControlDetector
 from .arbitrary_call import ArbitraryCallDetector
+from .exploit_2026 import (
+    AsymmetricSafeMathDetector,
+    CrossChainTrustDetector,
+    DepositCallbackCEIDetector,
+    EncodePackedCollisionDetector,
+    FeeOnTransferSwapBoundsDetector,
+    HookCallbackAuthDetector,
+    HookPairBurnSyncDetector,
+    MemoryStructPersistenceDetector,
+    ReceiverHookCreditDetector,
+    SelfCallAuthBypassDetector,
+    SignerAllowlistDetector,
+    UnprotectedInitializerDetector,
+)
 from .arithmetic_logic import ArithmeticLogicDetector
 from .base import Detector
 from .bridge_accounting import BridgeAccountingDetector
@@ -50,10 +64,32 @@ ALL_DETECTORS: list[type[Detector]] = [
     PrivacyPoolDetector,
 ]
 
+# v0.9 "ultra-deep" detectors: one family per 2026 on-chain incident class
+# (Cork/Ekubo hooks, CrossCurve/Gyroscope cross-chain, Aurellion/Renegade
+# initializer, ShapeShift self-call, Butter encodePacked, SOFI/BUBU2 transfer
+# hooks, Solv ERC-3525 CEI, Synap fee-on-transfer, Truebit SafeMath, MoltEVM
+# memory-not-storage, TrustedVolumes signer allowlist).
+EXPLOIT_2026_DETECTORS: list[type[Detector]] = [
+    HookCallbackAuthDetector,
+    CrossChainTrustDetector,
+    UnprotectedInitializerDetector,
+    SelfCallAuthBypassDetector,
+    EncodePackedCollisionDetector,
+    HookPairBurnSyncDetector,
+    DepositCallbackCEIDetector,
+    ReceiverHookCreditDetector,
+    FeeOnTransferSwapBoundsDetector,
+    AsymmetricSafeMathDetector,
+    MemoryStructPersistenceDetector,
+    SignerAllowlistDetector,
+]
+
 _PROFILE_MAP: dict[str, list[type[Detector]]] = {
     "quick": [ProxyUpgradeDetector, ArbitraryCallDetector, AccessControlDetector],
     "standard": MVP_DETECTORS + [AccessControlDetector, OracleManipulationDetector],
     "deep": ALL_DETECTORS,
+    # The most exhaustive profile: deep + a detector family per 2026 incident class.
+    "ultra-deep": ALL_DETECTORS + EXPLOIT_2026_DETECTORS,
     # Covers the maximum of the 2026 code-findable incident list.
     "defi-deep": MVP_DETECTORS + ATTACK_CLASS_DETECTORS,
     "governance-focused": [
