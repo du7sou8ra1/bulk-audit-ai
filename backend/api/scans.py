@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from ..core import exporter
 from ..core.scanner import manager
 from ..database import get_db
+from ..detectors.registry import PROFILE_NAMES
 from ..models import Finding, Scan, ScanStatus, Target
 from ..schemas import (
     CreateScanRequest,
@@ -57,6 +58,32 @@ def _normalize_targets(req: CreateScanRequest) -> list[tuple[str, str]]:
         add(addr, label)
 
     return list(seen.items())
+
+
+# Human labels for the scan profiles; anything not listed falls back to a
+# title-cased version of the registry key, so the UI auto-shows new profiles.
+_PROFILE_LABELS = {
+    "quick": "Quick",
+    "standard": "Standard",
+    "deep": "Deep",
+    "ultra-deep": "Ultra-deep (2026 exploit classes)",
+    "defi-deep": "DeFi-deep",
+    "oracle-focused": "Oracle-focused",
+    "governance-focused": "Governance-focused",
+    "zk-focused": "ZK-focused",
+    "privacy-pool-focused": "Privacy-pool-focused",
+    "bridge-focused": "Bridge-focused",
+}
+
+
+@router.get("/scan-profiles")
+def scan_profiles() -> dict:
+    """Authoritative scan-profile list (the registry is the single source of
+    truth, so the UI dropdown can never drift from the backend)."""
+    def _label(p: str) -> str:
+        return _PROFILE_LABELS.get(p, p.replace("-", " ").title())
+
+    return {"profiles": [{"value": p, "label": _label(p)} for p in PROFILE_NAMES]}
 
 
 @router.get("/dashboard", response_model=DashboardStats)

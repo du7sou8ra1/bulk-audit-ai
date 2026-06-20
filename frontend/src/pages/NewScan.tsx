@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { api, type Toggles } from '../api'
+import { api, type ScanProfile, type Toggles } from '../api'
 import { PageHeader, ErrorBox } from '../components/ui'
 import AddressInputBox, { parseAddresses } from '../components/AddressInputBox'
 
@@ -14,10 +14,15 @@ const CHAINS = [
   'avalanche',
 ]
 
-const PROFILES = [
+// Fallback only — the live list is fetched from /api/scan-profiles so the dropdown
+// can never drift from the backend registry.
+const FALLBACK_PROFILES: ScanProfile[] = [
   { value: 'quick', label: 'Quick' },
   { value: 'standard', label: 'Standard' },
   { value: 'deep', label: 'Deep' },
+  { value: 'ultra-deep', label: 'Ultra-deep (2026 exploit classes)' },
+  { value: 'defi-deep', label: 'DeFi-deep' },
+  { value: 'oracle-focused', label: 'Oracle-focused' },
   { value: 'governance-focused', label: 'Governance-focused' },
   { value: 'zk-focused', label: 'ZK-focused' },
   { value: 'privacy-pool-focused', label: 'Privacy-pool-focused' },
@@ -37,6 +42,22 @@ export default function NewScan() {
   const [name, setName] = useState('')
   const [chain, setChain] = useState('ethereum')
   const [profile, setProfile] = useState('standard')
+  const [profiles, setProfiles] = useState<ScanProfile[]>(FALLBACK_PROFILES)
+
+  useEffect(() => {
+    let active = true
+    api
+      .getScanProfiles()
+      .then((r) => {
+        if (active && r.profiles?.length) setProfiles(r.profiles)
+      })
+      .catch(() => {
+        /* keep the fallback list */
+      })
+    return () => {
+      active = false
+    }
+  }, [])
   const [blob, setBlob] = useState('')
   const [toggles, setToggles] = useState<Record<keyof Toggles, boolean>>({
     slither: true,
@@ -135,7 +156,7 @@ export default function NewScan() {
               value={profile}
               onChange={(e) => setProfile(e.target.value)}
             >
-              {PROFILES.map((p) => (
+              {profiles.map((p) => (
                 <option key={p.value} value={p.value}>
                   {p.label}
                 </option>

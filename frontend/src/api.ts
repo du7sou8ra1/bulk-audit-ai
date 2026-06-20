@@ -290,8 +290,16 @@ async function request<T>(
 
 // --------------------------- Endpoints ---------------------------
 
+export interface ScanProfile {
+  value: string
+  label: string
+}
+
 export const api = {
   getDashboard: () => request<DashboardData>('/api/dashboard'),
+
+  getScanProfiles: () =>
+    request<{ profiles: ScanProfile[] }>('/api/scan-profiles'),
 
   getToolHealth: () => request<ToolHealth>('/api/health/tools'),
 
