@@ -102,3 +102,29 @@ def test_corroboration_confidence_bump():
     c = _lead(impact=9.0, conf=4.0, extra={"corroborated": True, "corroborated_by": ["invariant_reasoner"]})
     bumped = score_finding(c).confidence_score
     assert bumped >= base + 2.0
+
+
+def _confirmable(refuted=False):
+    ev = {"onchain_detectable": "confirmable"}
+    if refuted:
+        ev["refuted"] = True
+    return FindingCandidate(
+        detector="cross_chain_trust",
+        title="Cross-chain handler calls an attacker-decoded target with decoded data",
+        description="_ccipReceive executes recipient.functionCall(data) with no allowlist.",
+        impact_score=9.0, confidence_score=8.0, severity_candidate="critical",
+        evidence=ev, affected_functions=["_ccipReceive"],
+    )
+
+
+def test_confirmable_unrefuted_is_not_false_positive():
+    # The Gyroscope case: a confirmable detector hit must not be buried at the floor.
+    r = score_finding(_confirmable(refuted=False))
+    assert r.classification != Classification.FALSE_POSITIVE
+    assert r.confidence_score >= 5.0
+
+
+def test_confirmable_refuted_with_control_drops():
+    # If the skeptic cited a concrete on-chain control, refuted is set and it caps.
+    r = score_finding(_confirmable(refuted=True))
+    assert r.confidence_score <= 2.0

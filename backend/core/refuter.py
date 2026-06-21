@@ -46,19 +46,24 @@ Return ONLY JSON:
  "concrete_mitigation": true|false,
  "reasoning": "brief"}"""
 
-# Appended for lead_only findings (binding may live off-chain / needs a fork PoC).
-_LEAD_ADDENDUM = """
+# Appended for PROTECTED findings — lead_only OR confirmable detector findings.
+# A deterministic detector already located a specific structural defect, so the
+# skeptic may only KILL it by citing a concrete on-chain control, not by vague
+# "probably not exploitable" (which buried real bugs like Gyroscope's _ccipReceive).
+_PROTECTED_ADDENDUM = """
 
-THIS CANDIDATE IS A LEAD: the detector has ALREADY determined it cannot be confirmed
-from Solidity alone — the binding may live in the off-chain circuit, or confirming it
-needs a fork PoC. Therefore "I cannot confirm it", "it depends on the circuit",
-"needs a PoC", or "the proof probably constrains it" are NOT refutations — they are
-the EXPECTED state of this finding and must NOT, on their own, set is_real=false.
-You may treat the lead as defused ONLY when you can cite a CONCRETE on-chain control
-present in the slice that actually neutralizes it: an equality/range require binding
-the value or count to the proof-committed quantity, a hash-compare against a
-committed value, or an access modifier blocking unprivileged callers. If no such
-concrete control exists, the lead SURVIVES for human / circuit investigation.
+THIS CANDIDATE COMES FROM A DETERMINISTIC DETECTOR THAT ALREADY IDENTIFIED A
+SPECIFIC STRUCTURAL DEFECT (an unauthenticated entrypoint, an unbound released
+value, a missing check, a callback before a state write, a decoded-target call,
+etc.). You may mark it defused ONLY if you can cite a CONCRETE on-chain control
+present in the code slice that actually neutralizes it: a require / modifier /
+equality-check that gates the caller or binds the value, a hash-compare against a
+committed value, a spent/nullifier guard, or an allowlist. The following are NOT
+refutations and must NOT set is_real=false on their own: "I cannot prove it is
+economically exploitable", "it is probably not reachable", "needs a PoC", "the
+protocol likely intends this", "the binding may live off-chain / in the circuit".
+Those are expected unknowns. If no concrete on-chain control is present in the
+slice, the finding SURVIVES.
 Set "concrete_mitigation": true ONLY if you cited such a control; otherwise false."""
 
 
@@ -70,8 +75,9 @@ def refute(ctx: TargetContext, candidate: FindingCandidate, cg: CallGraph | None
         return verdict
 
     ev0 = candidate.evidence or {}
-    is_lead = bool(ev0.get("lead_only") or ev0.get("onchain_detectable") == "lead_only")
-    system = _SYSTEM + (_LEAD_ADDENDUM if is_lead else "")
+    tier = ev0.get("onchain_detectable")
+    protected = bool(ev0.get("lead_only") or tier in ("lead_only", "confirmable"))
+    system = _SYSTEM + (_PROTECTED_ADDENDUM if protected else "")
 
     cg = cg or CallGraph.build(ctx.source_files)
     fn = (candidate.affected_functions or [None])[0]
@@ -113,10 +119,11 @@ def refute(ctx: TargetContext, candidate: FindingCandidate, cg: CallGraph | None
         "refutation": refutation,
         "reasoning": str(p.get("reasoning", ""))[:1500],
     }
-    # A finding the skeptic killed is flagged so scoring caps it hard. A LEAD is
-    # only killed by a CITED on-chain control — never by "can't confirm" (that is
-    # its expected state). Non-leads keep the original is_real/in_scope/residual gate.
-    if is_lead:
+    # A PROTECTED finding (lead_only OR confirmable detector finding) is only killed
+    # by a CITED concrete on-chain control — never by "probably not exploitable"
+    # (which buried Gyroscope's real _ccipReceive bug as a false positive). Untiered
+    # heuristic findings keep the original is_real/in_scope/residual gate.
+    if protected:
         if concrete:
             candidate.evidence["refuted"] = True
             candidate.evidence["refuted_concrete"] = True

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import re
 
+from .access_control import _INLINE_AUTH_RE  # shared inline body-guard recognizer
 from .base import (
     Detector,
     FindingCandidate,
@@ -20,6 +21,22 @@ from .base import (
     header_has_access_control,
     iter_function_bodies,
 )
+
+# Audited fixed-point / math primitives (Balancer LogExpMath, Solady, PRBMath,
+# OZ Math, etc.) deliberately use `unchecked` on provably-bounded operands — they
+# are NOT bugs. Flagging them produced dozens of false positives per contract.
+_LIB_MATH_NAMES = frozenset((
+    "exp", "exp2", "ln", "log", "log2", "log10", "sqrt", "cbrt", "rpow", "pow",
+    "powu", "mulwad", "divwad", "muldiv", "fullmuldiv", "gm", "avg", "rmul",
+    "rdiv", "wmul", "wdiv", "mulup", "muldown", "divup", "divdown", "mulwadup",
+    "uncheckedadd", "uncheckedsub", "uncheckedmul", "uncheckeddiv", "uncheckedinc",
+))
+
+
+def _is_lib_math(lname: str) -> bool:
+    n = lname.strip("_")
+    return n in _LIB_MATH_NAMES or any(n.startswith(m + "_") for m in _LIB_MATH_NAMES)
+
 
 _MINT_RE = re.compile(r"_mint\s*\(|\bmint\s*\(|_creditTo|increaseBalance|balances?\[[^\]]*\]\s*\+=",
                       re.IGNORECASE)
@@ -43,11 +60,11 @@ class ArithmeticLogicDetector(Detector):
                 continue
             for fname, _params, tail, body in iter_function_bodies(source):
                 lname = fname.lower()
-                guarded = header_has_access_control(tail)
+                guarded = header_has_access_control(tail) or bool(_INLINE_AUTH_RE.search(body))
                 ext = re.search(r"\b(public|external)\b", tail) is not None
 
-                # 1) unchecked arithmetic with real operations
-                for um in _UNCHECKED_RE.finditer(body):
+                # 1) unchecked arithmetic with real operations (skip audited math libs)
+                for um in (() if _is_lib_math(lname) else _UNCHECKED_RE.finditer(body)):
                     inner = um.group(1)
                     if _RISKY_MATH_RE.search(inner) and len(inner.strip()) > 12:
                         findings.append(self._c(
