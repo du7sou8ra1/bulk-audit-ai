@@ -43,7 +43,9 @@ _INLINE_AUTH_RE = re.compile(
     r"|_check(?:Owner|Role|Admin|Access|Auth|Governor|Governance)\w*\s*\("
     r"|_require(?:Owner|Admin|Role|Governance|Auth|Master|Caller|Sender)\w*\s*\("
     r"|\bhasRole\s*\("
-    r"|_authorizeUpgrade|isAuthorized|\baccessControlled\b|requiresAuth"
+    # NB: `_authorizeUpgrade` deliberately NOT here — an EMPTY override is the bug,
+    # so the bare token must not count as a guard (see the UUPS rule below).
+    r"|isAuthorized|\baccessControlled\b|requiresAuth"
     # bare internal guard-call statement: `onlyGovernor();` / `_onlyRole(ADMIN);`
     r"|(?:^|[;{])\s*_?only(?:Owner|Governor|Governance|Admin|Role|Operator|Manager|"
     r"Guardian|Keeper|Minter|Self|Auth|Master|Lister|Validator)\w*\s*\([^;{}]*\)\s*;",
@@ -59,14 +61,40 @@ class AccessControlDetector(Detector):
 
     def run(self, ctx: TargetContext) -> list[FindingCandidate]:
         findings: list[FindingCandidate] = []
+        low = ctx.all_source_text().lower()
+        is_uups = "uupsupgradeable" in low or "upgradeto" in low
         for path, source in ctx.source_files.items():
             if not source:
                 continue
             for fname, _params, tail, body in iter_function_bodies(source):
+                lname = fname.lower()
+
+                # UUPS: an empty / non-authorizing _authorizeUpgrade override lets
+                # anyone call upgradeToAndCall (Wormhole/Audius class). Internal fn,
+                # so this is checked before the external-only gate below.
+                if is_uups and "authorizeupgrade" in lname:
+                    inner = body[body.find("{") + 1: body.rfind("}")]
+                    authed = (
+                        header_has_access_control(tail)
+                        or bool(_INLINE_AUTH_RE.search(body))
+                        or "revert" in inner.lower()
+                    )
+                    if not authed:
+                        findings.append(self._c(
+                            fname, path, body, bug="uups_unprotected_authorize_upgrade",
+                            impact=9.0, conf=8.0, tier="confirmable",
+                            rule_id="uups_authorize_upgrade_empty",
+                            title=f"UUPS _authorizeUpgrade has no authorization: {fname}",
+                            desc=(f"`{fname}` is the UUPS upgrade-authorization hook but its body "
+                                  "contains no owner/role check and no revert. Anyone can call "
+                                  "upgradeToAndCall and replace the implementation (Wormhole "
+                                  "uninitialized-impl / generic empty-_authorizeUpgrade class)."),
+                            tests=["From an unprivileged EOA call upgradeToAndCall(maliciousImpl, ...) on a fork; expect success = exploitable",
+                                   "Confirm _authorizeUpgrade enforces onlyOwner/onlyRole"]))
+
                 ext = re.search(r"\b(public|external)\b", tail) is not None
                 if not ext:
                     continue
-                lname = fname.lower()
                 guarded = header_has_access_control(tail) or bool(_INLINE_AUTH_RE.search(body))
 
                 # tx.origin auth (phishable)
@@ -106,12 +134,17 @@ class AccessControlDetector(Detector):
         return findings
 
     @staticmethod
-    def _c(fname, path, body, *, title, desc, impact, conf, bug, tests, unprivileged=True):
+    def _c(fname, path, body, *, title, desc, impact, conf, bug, tests, unprivileged=True,
+           tier=None, rule_id=None):
+        ev = {"function": fname, "file": path, "snippet": body[:1500],
+              "bug_class": bug, "needs_poc": True, "unprivileged": unprivileged}
+        if tier:
+            ev["onchain_detectable"] = tier
+        if rule_id:
+            ev["rule_id"] = rule_id
         return FindingCandidate(
             detector="access_control", title=title, description=desc,
             impact_score=impact, confidence_score=conf,
             severity_candidate="critical" if impact >= 9 else "high",
-            evidence={"function": fname, "file": path, "snippet": body[:1500],
-                      "bug_class": bug, "needs_poc": True, "unprivileged": unprivileged},
-            next_tests=tests, affected_functions=[fname],
+            evidence=ev, next_tests=tests, affected_functions=[fname],
         )

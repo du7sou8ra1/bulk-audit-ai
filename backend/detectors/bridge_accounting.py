@@ -53,6 +53,24 @@ _CLEAR_RE = re.compile(
 _FAILURE_CHECK_RE = re.compile(
     r"require\s*\([^)]*(status|failed|isfailed|hasfailed|notsuccess|!success)", re.IGNORECASE
 )
+# Nomad ($190M): a 'confirmed' gate keyed by the untrusted root whose DEFAULT
+# (zero/unset) value passes (confirmAt[0]=1 made the zero root acceptable).
+_NOMAD_ENTRY = re.compile(
+    r"\b(process|prove\w*|execute\w*|receivemessage|ccipreceive|verifyandstore|"
+    r"submitroot|relay\w*)\b",
+    re.IGNORECASE,
+)
+_ROOT_GATE = re.compile(
+    r"(?:require|if)\s*\(\s*\w*(?:acceptableroot|confirmedroot|confirmat|knownroot|"
+    r"roots?|messages?)\s*\[[^\]]+\]\s*(?:\)|,|==\s*(?:true|1)|!=\s*0|>\s*0)"
+    r"|\b(?:isknownroot|acceptableroot|isconfirmed|rootconfirmed)\s*\(",
+    re.IGNORECASE,
+)
+_ZERO_REJECT = re.compile(
+    r"\b\w*(?:root|messagehash|leaf)\w*\s*!=\s*(?:bytes32\s*\(\s*0\s*\)|0x0+\b|0\b)"
+    r"|status\s*==\s*\w+\.(?:proven|confirmed|verified|valid)",
+    re.IGNORECASE,
+)
 
 
 def _iter_bodies(source: str):
@@ -92,6 +110,25 @@ class BridgeAccountingDetector(Detector):
             for fname, body in _iter_bodies(source):
                 lname = fname.lower()
                 snippet = body[:1500]
+
+                # --- Nomad-style default-root acceptance ------------------ #
+                if (_NOMAD_ENTRY.search(lname) or re.search(r"root|merkle|leaf", body, re.I)) \
+                        and _ROOT_GATE.search(body) and not _ZERO_REJECT.search(body):
+                    findings.append(self._cand(
+                        fname, path, snippet,
+                        title=f"Message/root accepted via a mapping whose default value passes: {fname}",
+                        desc=(f"`{fname}` gates on a roots/messages mapping keyed by the untrusted "
+                              "root/message, but a DEFAULT-initialized (zero/unset) value can satisfy "
+                              "the check and there is no explicit zero-root rejection. A "
+                              "misconfiguration that makes the zero root 'acceptable' lets any "
+                              "message prove against it (the Nomad $190M class)."),
+                        impact=9.0, confidence=7.0,
+                        extra={"onchain_detectable": "confirmable",
+                               "rule_id": "bridge_root_default_acceptance", "bug_class": "cross-chain-root-default-acceptance"},
+                        tests=[
+                            "Confirm a zero/unset root cannot satisfy the gate (require(root != bytes32(0)) or a named non-zeroth status enum).",
+                            "Fork: submit a message proving against the zero root and check it is accepted.",
+                        ]))
 
                 # --- Failed-deposit recovery ------------------------------ #
                 if any(k in lname for k in _RECOVERY_NAMES):
