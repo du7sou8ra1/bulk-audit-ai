@@ -33,6 +33,34 @@ _BAL_PRICE_RE = re.compile(
 )
 _PRICEY_RE = re.compile(r"price|value|reward|share|rate|amountOut|collateral", re.IGNORECASE)
 
+# ORC-MEDIAN-SPOT: an aggregated oracle (median/min/max of N feeds) is only as safe
+# as its weakest manipulable input. UwU Lend ($23M): median of 11 feeds, several raw
+# Curve get_p spot reads.
+_SPOT_SUBREAD_RE = re.compile(
+    r"get_p\s*\(|get_dy\s*\(|\.slot0\s*\(|getReserves\s*\(|getAmountsOut\s*\(|"
+    r"price_oracle\s*\(|last_price\s*\(|spotPrice",
+    re.IGNORECASE,
+)
+_AGG_RE = re.compile(r"\b(median|mean|average)\s*\(|\bsort\s*\(|\bmin\s*\(|\bmax\s*\(", re.IGNORECASE)
+_TWAP_WRAP_RE = re.compile(
+    r"twap|cumulative|observe\s*\(|consult\s*\([^)]*,\s*\d+|time.?weighted", re.IGNORECASE
+)
+# ORC-4626-DONATION: shares = assets * supply / totalAssets where totalAssets is a
+# live balanceOf(this) (donation-inflatable) with no dead-shares / virtual offset.
+_SHARE_MULDIV_RE = re.compile(
+    r"(assets?|amount|deposit\w*)\w*\s*\*\s*\w*supply\w*\s*/"
+    r"|convertToShares\s*\(|previewDeposit\s*\(",
+    re.IGNORECASE,
+)
+_BAL_TOTALASSETS_RE = re.compile(
+    r"(asset\w*\.)?balanceOf\s*\(\s*(address\s*\(\s*this\s*\)|this)\s*\)", re.IGNORECASE
+)
+_VAULT_MITIGATION_RE = re.compile(
+    r"_decimalsOffset|virtualShares|10\s*\*\*\s*_?decimals|MINIMUM_LIQUIDITY|deadShares|"
+    r"_mint\s*\(\s*(address\s*\(\s*0\s*\)|DEAD|0xdead|0x0+dead)|require\s*\([^)]*shares\s*>=",
+    re.IGNORECASE,
+)
+
 
 class OracleManipulationDetector(Detector):
     name = "oracle_manipulation"
@@ -84,8 +112,10 @@ class OracleManipulationDetector(Detector):
                         impact=6.5, conf=5.0, bug="oracle",
                         tests=["Confirm updatedAt is checked against a max heartbeat",
                                "Confirm price > 0 and answeredInRound >= roundId"]))
-                # 4) balanceOf-derived pricing (donation / flash-loan)
-                if _BAL_PRICE_RE.search(body) and _PRICEY_RE.search(body):
+                # 4) balanceOf-derived pricing (donation / flash-loan); skip when a
+                # virtual-offset / dead-shares mitigation is present (OZ4626).
+                if _BAL_PRICE_RE.search(body) and _PRICEY_RE.search(body) \
+                        and not _VAULT_MITIGATION_RE.search(body):
                     findings.append(self._c(
                         fname, path, body,
                         title=f"Share/price derived from live balanceOf: {fname}",
@@ -95,15 +125,47 @@ class OracleManipulationDetector(Detector):
                         impact=8.0, conf=4.5, bug="oracle",
                         tests=["Donate tokens to the contract on a fork, then check share price moved",
                                "Confirm accounting uses internal tracked balances, not balanceOf"]))
+                # 5) aggregated oracle (median/min/max) with >=1 raw spot sub-read (UwU)
+                if (_PRICEY_RE.search(body) or _PRICEY_RE.search(lname)) and _AGG_RE.search(body) \
+                        and _SPOT_SUBREAD_RE.search(body) and not _TWAP_WRAP_RE.search(body):
+                    findings.append(self._c(
+                        fname, path, body, tier="confirmable", rule_id="oracle_aggregated_spot",
+                        title=f"Aggregated oracle (median/min/max) includes a raw spot read: {fname}",
+                        desc=(f"`{fname}` aggregates several price feeds (median/min/max) but at "
+                              "least one input is a raw spot read (Curve get_p/get_dy, slot0, "
+                              "getReserves). A median is only as safe as its weakest manipulable "
+                              "minority — skewing enough of the spot inputs moves the result "
+                              "(the UwU Lend $23M class)."),
+                        impact=8.5, conf=6.0, bug="oracle",
+                        tests=["Identify which feeds are spot vs TWAP/Chainlink; count how many an attacker can move",
+                               "Fork: flash-skew the spot pools feeding this aggregate and check the output price"]))
+                # 6) ERC4626 / first-depositor share inflation via balanceOf totalAssets
+                if _SHARE_MULDIV_RE.search(body) and _BAL_TOTALASSETS_RE.search(body) \
+                        and not _VAULT_MITIGATION_RE.search(body):
+                    findings.append(self._c(
+                        fname, path, body, tier="confirmable", rule_id="share_inflation_4626",
+                        title=f"ERC4626 share inflation: shares from balanceOf totalAssets, no dead-shares: {fname}",
+                        desc=(f"`{fname}` computes shares = assets * supply / totalAssets where "
+                              "totalAssets is a live balanceOf(address(this)) and no dead-shares / "
+                              "virtual-offset mitigation is present. A first depositor can donate to "
+                              "the vault to inflate totalAssets and round later deposits to zero "
+                              "shares (the classic ERC4626 inflation attack)."),
+                        impact=8.0, conf=6.5, bug="share_inflation",
+                        tests=["Fork: deposit 1 wei, donate a large amount to the vault, then a 2nd depositor gets ~0 shares",
+                               "Confirm there is no virtual-offset / minimum-liquidity dead-shares lock"]))
         return findings
 
     @staticmethod
-    def _c(fname, path, body, *, title, desc, impact, conf, bug, tests):
+    def _c(fname, path, body, *, title, desc, impact, conf, bug, tests, tier=None, rule_id=None):
+        ev = {"function": fname, "file": path, "snippet": body[:1500],
+              "bug_class": bug, "needs_poc": True, "unprivileged": True}
+        if tier:
+            ev["onchain_detectable"] = tier
+        if rule_id:
+            ev["rule_id"] = rule_id
         return FindingCandidate(
             detector="oracle_manipulation", title=title, description=desc,
             impact_score=impact, confidence_score=conf,
             severity_candidate="critical" if impact >= 9 else "high",
-            evidence={"function": fname, "file": path, "snippet": body[:1500],
-                      "bug_class": bug, "needs_poc": True, "unprivileged": True},
-            next_tests=tests, affected_functions=[fname],
+            evidence=ev, next_tests=tests, affected_functions=[fname],
         )
