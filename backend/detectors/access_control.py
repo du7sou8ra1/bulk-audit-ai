@@ -29,8 +29,26 @@ _PRIV_RE = re.compile(
     r"setoracle|setverifier|setimplementation|init)\w*",
     re.IGNORECASE,
 )
-_INLINE_AUTH_RE = re.compile(r"require\s*\(\s*[^)]*msg\.sender\s*==|"
-                             r"_checkOwner|_checkRole|onlyOwner\(|_authorizeUpgrade", re.IGNORECASE)
+# Inline BODY guards (not header modifiers). The narrow original missed the most
+# common real patterns and produced 30-50 false positives per contract on
+# zkSync/ZKSpace/Pendle (functions guarded by `governance.requireGovernor(...)`,
+# `_requireMaster()`, `hasRole(...)`, `if (msg.sender != gov) revert`, etc.).
+_INLINE_AUTH_RE = re.compile(
+    r"require\s*\([^;]*?msg\.sender\s*(==|!=)"
+    r"|require\s*\([^;]*?_?msgSender\s*\(\s*\)\s*(==|!=)"
+    r"|if\s*\([^;{]*\bmsg\.sender\s*(==|!=)[^;{]*\)\s*\{?\s*(revert|return)"
+    # requireGovernor( / requireMaster( / .requireGovernor( / requireActive( ...
+    r"|\brequire(?:Governor|Master|Active|Validator|TokenGovernance|Auth|Owner|"
+    r"Admin|Role|Governance|Operator|Manager|Sender|Caller|Lister)\w*\s*\("
+    r"|_check(?:Owner|Role|Admin|Access|Auth|Governor|Governance)\w*\s*\("
+    r"|_require(?:Owner|Admin|Role|Governance|Auth|Master|Caller|Sender)\w*\s*\("
+    r"|\bhasRole\s*\("
+    r"|_authorizeUpgrade|isAuthorized|\baccessControlled\b|requiresAuth"
+    # bare internal guard-call statement: `onlyGovernor();` / `_onlyRole(ADMIN);`
+    r"|(?:^|[;{])\s*_?only(?:Owner|Governor|Governance|Admin|Role|Operator|Manager|"
+    r"Guardian|Keeper|Minter|Self|Auth|Master|Lister|Validator)\w*\s*\([^;{}]*\)\s*;",
+    re.IGNORECASE,
+)
 _INIT_GUARD_RE = re.compile(r"initializer|reinitializer|_disableInitializers|"
                             r"require\s*\([^)]*initialized", re.IGNORECASE)
 _TXORIGIN_RE = re.compile(r"tx\.origin\s*==|==\s*tx\.origin|require\s*\([^)]*tx\.origin", re.IGNORECASE)
