@@ -47,6 +47,45 @@ def candidate_fingerprint(candidate: FindingCandidate) -> str:
                        candidate.affected_functions, ev.get("file", ""))
 
 
+def _content_key(candidate: FindingCandidate) -> str:
+    """Content fingerprint EXCLUDING the file path — so the SAME finding emitted
+    from proxy + implementation + flattened copies collapses to one. A body hash
+    keeps two genuinely different functions that share a name separate."""
+    ev = candidate.evidence or {}
+    fn = ((candidate.affected_functions or [""])[0] or "").lstrip("_").lower()
+    rule = ev.get("rule_id") or _norm_title(candidate.title)
+    snippet = _WS.sub("", str(ev.get("snippet", "") or ""))
+    body_hash = hashlib.sha1(snippet.encode("utf-8")).hexdigest()[:12] if snippet else ""
+    return f"{candidate.detector}|{fn}|{rule}|{body_hash}"
+
+
+def collapse_duplicates(candidates: list[FindingCandidate]) -> list[FindingCandidate]:
+    """Collapse cross-compilation-unit duplicates (same detector+function+rule+body
+    from several source files) into ONE representative, recording the other files in
+    evidence['also_in_files'] (never silently dropped) and a dup_count. Keeps the
+    strongest impact/confidence. MUST run AFTER corroboration so it sees all copies.
+    """
+    seen: dict[str, FindingCandidate] = {}
+    out: list[FindingCandidate] = []
+    for c in candidates:
+        key = _content_key(c)
+        rep = seen.get(key)
+        if rep is None:
+            seen[key] = c
+            out.append(c)
+            continue
+        ev = rep.evidence
+        f = (c.evidence or {}).get("file")
+        if f and f != ev.get("file"):
+            also = ev.setdefault("also_in_files", [])
+            if f not in also:
+                also.append(f)
+        ev["dup_count"] = int(ev.get("dup_count", 1)) + 1
+        rep.impact_score = max(rep.impact_score, c.impact_score)
+        rep.confidence_score = max(rep.confidence_score, c.confidence_score)
+    return out
+
+
 def is_suppressed(fp: str, address: str | None = None) -> tuple[bool, str]:
     with SessionLocal() as db:
         rows = db.scalars(

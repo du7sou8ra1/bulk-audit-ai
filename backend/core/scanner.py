@@ -385,6 +385,12 @@ async def process_target(
     # Cross-signal corroboration: mark findings that >=2 independent detectors /
     # the reasoner flagged on the same function (scoring then bumps confidence).
     mark_corroboration(candidates)
+    # Collapse cross-file duplicates (same finding from proxy+impl+flattened) so a
+    # report is readable. Runs AFTER corroboration so it sees every copy.
+    before_dedup = len(candidates)
+    candidates = dedup.collapse_duplicates(candidates)
+    if len(candidates) < before_dedup:
+        _log(scan_id, f"[{address}] dedup: {before_dedup} -> {len(candidates)} findings")
 
     # --- Score + (optional) refute + fork PoC + AI review + persist ------- #
     _set_target_status(scan_id, target_id, TargetStatus.AI)
