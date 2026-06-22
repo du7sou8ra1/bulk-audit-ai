@@ -28,6 +28,8 @@ from .privacy_pool import PrivacyPoolDetector
 from .proxy_upgrade import ProxyUpgradeDetector
 from .reentrancy import ReentrancyDetector
 from .signature_replay import SignatureReplayDetector
+from .solvency_check import SolvencyCheckDetector
+from .flashloan_governance import FlashloanGovernanceDetector
 from .time_logic import TimeLogicDetector
 from .timelock_roles import TimelockRolesDetector
 from .token_logic import TokenLogicDetector
@@ -53,6 +55,8 @@ ATTACK_CLASS_DETECTORS: list[type[Detector]] = [
     TimeLogicDetector,            # DxSale
     BridgeAccountingDetector,     # KelpDAO / Gravity (on-chain part)
     ZkVerifierDetector,           # Aztec settlement binding + FOOMCASH/Veil Groth16
+    SolvencyCheckDetector,        # Euler donateToReserves (missing liquidity check) (v0.5)
+    FlashloanGovernanceDetector,  # Beanstalk (spot-power vote + same-tx exec) (v0.5)
 ]
 
 # All known detectors (implemented + remaining stubs).
@@ -94,6 +98,7 @@ _PROFILE_MAP: dict[str, list[type[Detector]]] = {
     "defi-deep": MVP_DETECTORS + ATTACK_CLASS_DETECTORS,
     "governance-focused": [
         GovernanceBlastRadiusDetector,
+        FlashloanGovernanceDetector,
         TimelockRolesDetector,
         ProxyUpgradeDetector,
         AccessControlDetector,
@@ -105,6 +110,12 @@ _PROFILE_MAP: dict[str, list[type[Detector]]] = {
     ],
     "privacy-pool-focused": MVP_DETECTORS + [PrivacyPoolDetector],
     "bridge-focused": MVP_DETECTORS + [BridgeAccountingDetector, SignatureReplayDetector],
+    "lending-focused": [
+        SolvencyCheckDetector,
+        ReentrancyDetector,
+        OracleManipulationDetector,
+        AccessControlDetector,
+    ],
 }
 
 

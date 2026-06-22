@@ -51,6 +51,7 @@ from .scoring import score_finding, mark_corroboration
 from .source_fetcher import (
     SourcePackage,
     fetch_source,
+    expand_module_sources,
     project_source_files,
     write_source_to_workspace,
 )
@@ -293,6 +294,24 @@ async def process_target(
             solc_version = solc_version or impl_pkg.solc_version
         except Exception as exc:
             logger.warning("impl source fetch failed for %s: %s", address, exc)
+
+    # --- Module / facet expansion (Diamond loupe + module dispatcher) ------ #
+    # Dispatcher/diamond architectures keep logic in separate facet/module impls.
+    # Pull them so detectors actually see the code (Euler donateToReserves
+    # visibility gap + any EIP-2535 diamond such as Beanstalk).
+    try:
+        mod_files, expanded_modules = await asyncio.to_thread(
+            expand_module_sources, onchain, address, chain, pkg.abi
+        )
+        if mod_files:
+            source_files.update(mod_files)
+            for relp, content in mod_files.items():
+                fp = workspace["source"] / relp
+                fp.parent.mkdir(parents=True, exist_ok=True)
+                fp.write_text(content or "", encoding="utf-8", errors="replace")
+            _log(scan_id, f"[{address}] expanded {len(expanded_modules)} facet/module impl(s)")
+    except Exception as exc:
+        logger.warning("module/facet expansion failed for %s: %s", address, exc)
 
     _set_target_status(
         scan_id,

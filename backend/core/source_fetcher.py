@@ -380,3 +380,145 @@ def write_source_to_workspace(source_dir: Path, pkg: SourcePackage) -> Path:
         fpath.write_text(content or "", encoding="utf-8", errors="replace")
 
     return source_dir
+
+
+# --------------------------------------------------------------------------- #
+# Module / facet source expansion (v0.5)
+#
+# Dispatcher/diamond architectures keep their real logic in separate module or
+# facet implementation contracts. Stopping at the dispatcher is exactly why the
+# Euler `donateToReserves` code was never seen. This pulls EIP-2535 Diamond
+# facets (any diamond, e.g. Beanstalk) and Euler-style module-dispatcher
+# implementations so detectors can actually read them. Reads go through the node
+# RPC when available, else fall back to the Etherscan eth_call proxy (which only
+# needs the explorer key) -- so module expansion works even with no RPC set.
+# All calls are best-effort + never raise.
+# --------------------------------------------------------------------------- #
+from typing import TYPE_CHECKING  # noqa: E402
+
+from eth_utils import keccak, to_checksum_address  # noqa: E402
+
+if TYPE_CHECKING:
+    from .onchain import OnchainClient  # noqa: F401
+
+_EULER_MODULE_IDS = (1, 2, 3, 4, 5, 6, 7, 8, 500000, 500001)
+
+
+def _selector(signature: str) -> str:
+    return "0x" + keccak(text=signature)[:4].hex()
+
+
+def _decode_address(raw):
+    h = (raw or "").lower().replace("0x", "")
+    if len(h) < 64:
+        return None
+    addr_hex = h[24:64]
+    try:
+        if int(addr_hex, 16) == 0:
+            return None
+        return to_checksum_address("0x" + addr_hex)
+    except Exception:
+        return None
+
+
+def _decode_address_array(raw):
+    h = (raw or "").lower().replace("0x", "")
+    if len(h) < 128:
+        return []
+    try:
+        offset = int(h[0:64], 16) * 2
+        length = int(h[offset:offset + 64], 16)
+        out = []
+        base = offset + 64
+        for i in range(min(length, 256)):
+            word = h[base + i * 64: base + (i + 1) * 64]
+            if len(word) < 64:
+                break
+            a = _decode_address(word)
+            if a:
+                out.append(a)
+        return out
+    except Exception:
+        return []
+
+
+def etherscan_eth_call(to, data, chain="ethereum"):
+    """eth_call via the Etherscan proxy module (uses the explorer key, not a node
+    RPC). Lets module/facet discovery work when no RPC is configured."""
+    resp = _etherscan_get({"module": "proxy", "action": "eth_call",
+                           "to": to, "data": data, "tag": "latest", "chain": chain})
+    if not resp:
+        return None
+    res = resp.get("result")
+    return res if isinstance(res, str) and res.startswith("0x") else None
+
+
+def discover_facet_module_addresses(onchain, address, abi=None, *, chain="ethereum", eth_call=None):
+    """EIP-2535 Diamond facets + Euler-style module implementations.
+
+    Reads via the node RPC when available, else the Etherscan eth_call proxy.
+    Returns a deduped list of checksummed addresses (never raises)."""
+    if eth_call is None:
+        eth_call = etherscan_eth_call
+    out = []
+    seen = set()
+
+    def _add(a):
+        if not a:
+            return
+        al = a.lower()
+        if al in seen or (address and al == address.lower()):
+            return
+        seen.add(al)
+        out.append(a)
+
+    def _call(to, data):
+        if onchain is not None and getattr(onchain, "available", False):
+            try:
+                r = onchain.eth_call_raw(to, data)
+                if r:
+                    return r
+            except Exception:
+                pass
+        try:
+            return eth_call(to, data, chain)
+        except Exception:
+            return None
+
+    for a in _decode_address_array(_call(address, _selector("facetAddresses()"))):
+        _add(a)
+
+    for sig in ("moduleIdToImplementation(uint256)", "moduleIdToProxy(uint256)"):
+        sel = _selector(sig)
+        for mid in _EULER_MODULE_IDS:
+            _add(_decode_address(_call(address, sel + f"{mid:064x}")))
+    return out
+
+
+def expand_module_sources(onchain, address, chain="ethereum", abi=None, *,
+                          fetch=None, eth_call=None, max_modules=16):
+    """Discover + fetch facet/module implementation source.
+
+    Returns (merged_files, expanded_addresses) where merged_files maps
+    ``_modules/<addr>/<path>`` -> content. Never raises."""
+    if fetch is None:
+        fetch = fetch_source
+    merged = {}
+    expanded = []
+    try:
+        addrs = discover_facet_module_addresses(onchain, address, abi, chain=chain, eth_call=eth_call)
+    except Exception:
+        return merged, expanded
+    for a in addrs:
+        if len(expanded) >= max_modules:
+            break
+        try:
+            mp = fetch(a, chain)
+        except Exception:
+            continue
+        if mp and getattr(mp, "verified", False) and getattr(mp, "source_files", None):
+            al = a.lower()
+            for relp, content in mp.source_files.items():
+                merged[f"_modules/{al}/{relp}"] = content
+            expanded.append(a)
+    return merged, expanded
