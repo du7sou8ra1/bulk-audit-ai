@@ -7,6 +7,7 @@ from .arithmetic_logic import ArithmeticLogicDetector
 from .base import Detector
 from .bridge_accounting import BridgeAccountingDetector
 from .delegatecall import DelegatecallDetector
+from .flashloan_governance import FlashloanGovernanceDetector
 from .governance_blast_radius import GovernanceBlastRadiusDetector
 from .oracle_manipulation import OracleManipulationDetector
 from .permit_misuse import PermitMisuseDetector
@@ -14,6 +15,7 @@ from .privacy_pool import PrivacyPoolDetector
 from .proxy_upgrade import ProxyUpgradeDetector
 from .reentrancy import ReentrancyDetector
 from .signature_replay import SignatureReplayDetector
+from .solvency_check import SolvencyCheckDetector
 from .time_logic import TimeLogicDetector
 from .timelock_roles import TimelockRolesDetector
 from .token_logic import TokenLogicDetector
@@ -28,17 +30,19 @@ MVP_DETECTORS: list[type[Detector]] = [
     GovernanceBlastRadiusDetector,
 ]
 
-# v0.4 attack-class detectors mapped to the 2026 incident taxonomy.
+# v0.4/v0.5 attack-class detectors mapped to the incident taxonomy.
 ATTACK_CLASS_DETECTORS: list[type[Detector]] = [
     AccessControlDetector,        # Truebit / Wasabi
     OracleManipulationDetector,   # YieldBlox / Venus / LML / BlindBox / MakinaFi
     ArithmeticLogicDetector,      # MakinaFi / Solv / Truebit
-    ReentrancyDetector,           # Venus
+    ReentrancyDetector,           # Venus + Rari/Fuse interprocedural CEI (v0.5)
     SignatureReplayDetector,      # GnosisPay / Drift
     TokenLogicDetector,           # SOF / LAXO
     TimeLogicDetector,            # DxSale
     BridgeAccountingDetector,     # KelpDAO / Gravity (on-chain part)
     ZkVerifierDetector,           # Aztec settlement binding + FOOMCASH/Veil Groth16
+    SolvencyCheckDetector,        # Euler donateToReserves (missing liquidity check) (v0.5)
+    FlashloanGovernanceDetector,  # Beanstalk (spot-power vote + same-tx exec) (v0.5)
 ]
 
 # All known detectors (implemented + remaining stubs).
@@ -54,10 +58,11 @@ _PROFILE_MAP: dict[str, list[type[Detector]]] = {
     "quick": [ProxyUpgradeDetector, ArbitraryCallDetector, AccessControlDetector],
     "standard": MVP_DETECTORS + [AccessControlDetector, OracleManipulationDetector],
     "deep": ALL_DETECTORS,
-    # Covers the maximum of the 2026 code-findable incident list.
+    # Covers the maximum of the code-findable incident list.
     "defi-deep": MVP_DETECTORS + ATTACK_CLASS_DETECTORS,
     "governance-focused": [
         GovernanceBlastRadiusDetector,
+        FlashloanGovernanceDetector,
         TimelockRolesDetector,
         ProxyUpgradeDetector,
         AccessControlDetector,
@@ -66,6 +71,12 @@ _PROFILE_MAP: dict[str, list[type[Detector]]] = {
     "zk-focused": MVP_DETECTORS + [ZkVerifierDetector],
     "privacy-pool-focused": MVP_DETECTORS + [PrivacyPoolDetector],
     "bridge-focused": MVP_DETECTORS + [BridgeAccountingDetector, SignatureReplayDetector],
+    "lending-focused": [
+        SolvencyCheckDetector,
+        ReentrancyDetector,
+        OracleManipulationDetector,
+        AccessControlDetector,
+    ],
 }
 
 
