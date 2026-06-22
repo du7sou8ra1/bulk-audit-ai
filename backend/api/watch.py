@@ -24,7 +24,7 @@ class AddWatchRequest(BaseModel):
     addresses_blob: str = ""
     addresses: list[str] = []
     chain: str = "ethereum"
-    scan_profile: str = "defi-deep"
+    scan_profile: str = "deep"
     github_url: str | None = None
     interval_seconds: int | None = None
 
@@ -127,7 +127,7 @@ class AddDeployerRequest(BaseModel):
     addresses_blob: str = ""
     addresses: list[str] = []
     chain: str = "ethereum"
-    scan_profile: str = "defi-deep"
+    scan_profile: str = "deep"
     interval_seconds: int | None = None
 
 

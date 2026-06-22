@@ -88,34 +88,19 @@ EXPLOIT_2026_DETECTORS: list[type[Detector]] = [
     SignerAllowlistDetector,
 ]
 
+# Single-mode build (user request): ONE profile, "deep", runs EVERY detector.
+# "ultra-deep" is intentionally NOT defined -- that name is reserved for the next
+# wave of enhancements. Until then, "deep" == the full set.
+FULL_DETECTORS: list[type[Detector]] = [
+    *MVP_DETECTORS,
+    *ATTACK_CLASS_DETECTORS,
+    *EXPLOIT_2026_DETECTORS,
+    DelegatecallDetector,
+    PrivacyPoolDetector,
+]
+
 _PROFILE_MAP: dict[str, list[type[Detector]]] = {
-    "quick": [ProxyUpgradeDetector, ArbitraryCallDetector, AccessControlDetector],
-    "standard": MVP_DETECTORS + [AccessControlDetector, OracleManipulationDetector],
-    "deep": ALL_DETECTORS,
-    # The most exhaustive profile: deep + a detector family per 2026 incident class.
-    "ultra-deep": ALL_DETECTORS + EXPLOIT_2026_DETECTORS,
-    # Covers the maximum of the 2026 code-findable incident list.
-    "defi-deep": MVP_DETECTORS + ATTACK_CLASS_DETECTORS,
-    "governance-focused": [
-        GovernanceBlastRadiusDetector,
-        FlashloanGovernanceDetector,
-        TimelockRolesDetector,
-        ProxyUpgradeDetector,
-        AccessControlDetector,
-    ],
-    "oracle-focused": [OracleManipulationDetector, TokenLogicDetector, ReentrancyDetector],
-    "zk-focused": MVP_DETECTORS + [
-        ZkVerifierDetector, ReentrancyDetector, BridgeAccountingDetector,
-        SignatureReplayDetector,
-    ],
-    "privacy-pool-focused": MVP_DETECTORS + [PrivacyPoolDetector],
-    "bridge-focused": MVP_DETECTORS + [BridgeAccountingDetector, SignatureReplayDetector],
-    "lending-focused": [
-        SolvencyCheckDetector,
-        ReentrancyDetector,
-        OracleManipulationDetector,
-        AccessControlDetector,
-    ],
+    "deep": FULL_DETECTORS,
 }
 
 
@@ -125,7 +110,7 @@ PROFILE_NAMES: list[str] = list(_PROFILE_MAP.keys())
 
 
 def get_detectors(profile: str) -> list[Detector]:
-    classes = _PROFILE_MAP.get(profile, MVP_DETECTORS)
+    classes = _PROFILE_MAP.get(profile, FULL_DETECTORS)
     seen: set[type[Detector]] = set()
     instances: list[Detector] = []
     for cls in classes:

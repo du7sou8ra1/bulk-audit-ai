@@ -58,7 +58,7 @@ class Settings(BaseSettings):
     # --- Monitoring ("before-drain") + alerting ----------------------------- #
     enable_monitor: bool = Field(default=False, alias="ENABLE_MONITOR")
     monitor_interval_seconds: int = Field(default=300, alias="MONITOR_INTERVAL_SECONDS")
-    monitor_scan_profile: str = Field(default="defi-deep", alias="MONITOR_SCAN_PROFILE")
+    monitor_scan_profile: str = Field(default="deep", alias="MONITOR_SCAN_PROFILE")
     # Cap auto-onboarded contracts per deployer-watch cycle (prolific factories).
     max_new_deploys_per_check: int = Field(default=25, alias="MAX_NEW_DEPLOYS_PER_CHECK")
     # Outbound webhook for alerts (Slack/Discord/Telegram-compatible or generic JSON).

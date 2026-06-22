@@ -14,10 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 try:
     from .detectors.registry import PROFILE_NAMES as SCAN_PROFILES
 except Exception:  # pragma: no cover - defensive fallback
-    SCAN_PROFILES = [
-        "quick", "standard", "deep", "defi-deep", "oracle-focused",
-        "governance-focused", "zk-focused", "privacy-pool-focused", "bridge-focused",
-    ]
+    SCAN_PROFILES = ["deep"]
 
 
 class ScanToggles(BaseModel):
@@ -36,7 +33,7 @@ class TargetInput(BaseModel):
 class CreateScanRequest(BaseModel):
     name: str = ""
     chain: str = "ethereum"
-    scan_profile: str = "standard"
+    scan_profile: str = "deep"
     # Either a list of structured targets or a raw blob of pasted addresses.
     targets: list[TargetInput] = Field(default_factory=list)
     addresses_blob: str = ""
@@ -44,10 +41,11 @@ class CreateScanRequest(BaseModel):
 
     @field_validator("scan_profile")
     @classmethod
-    def _known_profile(cls, v: str) -> str:
-        if v not in SCAN_PROFILES:
-            raise ValueError(f"unknown scan_profile '{v}'; expected one of {SCAN_PROFILES}")
-        return v
+    def _coerce_profile(cls, v: str) -> str:
+        # Single-mode build: there is one profile, "deep" (runs every detector).
+        # Coerce any legacy/stale client value to it instead of returning a 422,
+        # so the tool always runs the full set no matter what the client sends.
+        return v if v in SCAN_PROFILES else "deep"
 
 
 class FindingStatusUpdate(BaseModel):

@@ -17,16 +17,8 @@ const CHAINS = [
 // Fallback only — the live list is fetched from /api/scan-profiles so the dropdown
 // can never drift from the backend registry.
 const FALLBACK_PROFILES: ScanProfile[] = [
-  { value: 'quick', label: 'Quick' },
-  { value: 'standard', label: 'Standard' },
+  // single-mode build: 'deep' is the only profile (runs every detector).
   { value: 'deep', label: 'Deep' },
-  { value: 'ultra-deep', label: 'Ultra-deep (2026 exploit classes)' },
-  { value: 'defi-deep', label: 'DeFi-deep' },
-  { value: 'oracle-focused', label: 'Oracle-focused' },
-  { value: 'governance-focused', label: 'Governance-focused' },
-  { value: 'zk-focused', label: 'ZK-focused' },
-  { value: 'privacy-pool-focused', label: 'Privacy-pool-focused' },
-  { value: 'bridge-focused', label: 'Bridge-focused' },
 ]
 
 const TOOL_DEFS: { key: keyof Toggles; label: string; hint: string }[] = [
@@ -41,7 +33,7 @@ export default function NewScan() {
   const navigate = useNavigate()
   const [name, setName] = useState('')
   const [chain, setChain] = useState('ethereum')
-  const [profile, setProfile] = useState('standard')
+  const [profile, setProfile] = useState('deep')
   const [profiles, setProfiles] = useState<ScanProfile[]>(FALLBACK_PROFILES)
 
   useEffect(() => {

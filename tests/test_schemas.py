@@ -11,11 +11,13 @@ def test_valid_profiles_accepted():
         assert req.scan_profile == p
 
 
-def test_unknown_profile_rejected():
-    with pytest.raises(ValidationError):
-        CreateScanRequest(addresses_blob="0x", scan_profile="totally-made-up")
+def test_unknown_profile_coerced_to_deep():
+    # single-mode build: any client value is coerced to the one 'deep' profile
+    req = CreateScanRequest(addresses_blob="0x", scan_profile="totally-made-up")
+    assert req.scan_profile == "deep"
 
 
-def test_bridge_focused_is_valid():
-    assert "bridge-focused" in SCAN_PROFILES
-    CreateScanRequest(scan_profile="bridge-focused")
+def test_deep_is_the_only_valid_profile():
+    # single-mode build: 'deep' is the one and only profile
+    assert SCAN_PROFILES == ["deep"]
+    CreateScanRequest(scan_profile="deep")

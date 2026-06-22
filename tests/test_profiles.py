@@ -1,26 +1,34 @@
-"""The API scan_profile validator must accept every profile the registry defines
-(it went stale once and rejected 'defi-deep' with a 422).
+"""Single-mode build: 'deep' is the ONLY scan profile and it runs every detector.
+The API validator must stay in lock-step with the registry, and the registry must
+never silently degrade an unknown profile to a smaller set.
 Run: PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest tests/test_profiles.py -q
 """
 import pytest
 
-from backend.detectors.registry import PROFILE_NAMES, get_detectors
+from backend.detectors.registry import PROFILE_NAMES, FULL_DETECTORS, get_detectors
 from backend.schemas import SCAN_PROFILES, CreateScanRequest
 
 
 def test_schema_profiles_match_registry():
     assert set(SCAN_PROFILES) == set(PROFILE_NAMES)
-    assert "defi-deep" in SCAN_PROFILES
-    assert "oracle-focused" in SCAN_PROFILES
 
 
-def test_create_scan_accepts_registry_profiles():
-    for p in PROFILE_NAMES:
-        req = CreateScanRequest(scan_profile=p, addresses_blob="0x" + "11" * 20)
-        assert req.scan_profile == p
-        assert get_detectors(p)  # the registry actually resolves it to detectors
+def test_single_deep_mode_is_the_only_profile():
+    assert PROFILE_NAMES == ["deep"]
 
 
-def test_create_scan_rejects_unknown_profile():
-    with pytest.raises(Exception):
-        CreateScanRequest(scan_profile="totally-made-up")
+def test_deep_runs_every_detector():
+    assert len(get_detectors("deep")) == len(set(FULL_DETECTORS))
+
+
+def test_create_scan_accepts_deep():
+    req = CreateScanRequest(scan_profile="deep", addresses_blob="0x" + "11" * 20)
+    assert req.scan_profile == "deep"
+    assert get_detectors("deep")
+
+
+def test_unknown_profile_coerced_and_never_degrades():
+    # API coerces any value to 'deep' (single mode); the registry never degrades either
+    req = CreateScanRequest(scan_profile="totally-made-up", addresses_blob="0x" + "11" * 20)
+    assert req.scan_profile == "deep"
+    assert len(get_detectors("totally-made-up")) == len(get_detectors("deep"))
