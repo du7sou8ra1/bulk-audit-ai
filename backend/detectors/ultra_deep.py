@@ -372,3 +372,131 @@ class PayableMulticallMsgValueReuseDetector(Detector):
                         ],
                         affected_functions=[fname]))
         return out
+
+
+# --------------------------------------------------------------------------- #
+# Signed/unsigned cast mismatch (negative int -> huge uint bypasses bound)
+# --------------------------------------------------------------------------- #
+class SignedUnsignedCastMismatchDetector(Detector):
+    name = "signed_unsigned_cast_mismatch"
+
+    def run(self, ctx: TargetContext) -> list[FindingCandidate]:
+        out: list[FindingCandidate] = []
+        for path, src in ctx.source_files.items():
+            if not src:
+                continue
+            for fname, params, tail, body in iter_function_bodies(src):
+                int_params = [m for m in re.findall(r"\bint\d*\s+(\w+)", params)]
+                for ip in int_params:
+                    cast = re.search(r"uint\d*\s*\(\s*" + re.escape(ip) + r"\s*\)", body)
+                    guard = re.search(
+                        r"(require|if)\s*\([^;{]*\b" + re.escape(ip) + r"\b\s*(>=|>)\s*0"
+                        r"|\b" + re.escape(ip) + r"\b\s*<\s*0", body)
+                    if cast and not guard:
+                        out.append(FindingCandidate(
+                            detector=self.name,
+                            title=f"int cast to uint with no non-negative guard: {fname}",
+                            description=(
+                                f"`{fname}` casts the signed parameter `{ip}` to uint (uint(...)) "
+                                "without first requiring it >= 0. Solidity does NOT range-check "
+                                "int<->uint casts, so a negative value becomes a near-2**256 uint "
+                                "and can sail past a magnitude/slippage bound (Aftermath / Uniswap-v4 "
+                                "SafeCast class). Add require(" + ip + " >= 0) or use SafeCast."
+                            ),
+                            impact_score=7.5, confidence_score=5.5, severity_candidate="high",
+                            evidence={"function": fname, "file": path, "snippet": body[:1500],
+                                      "bug_class": "arithmetic_logic", "needs_poc": True, "unprivileged": True},
+                            next_tests=[
+                                f"Pass a negative {ip}; confirm uint({ip}) wraps to a huge value and bypasses the bound check",
+                                "Confirm there is no x >= 0 guard before the cast",
+                            ],
+                            affected_functions=[fname]))
+                        break
+        return out
+
+
+# --------------------------------------------------------------------------- #
+# Parallel-array length mismatch (batch/airdrop without length equality)
+# --------------------------------------------------------------------------- #
+class BatchArrayLengthMismatchDetector(Detector):
+    name = "batch_array_length_mismatch"
+
+    def run(self, ctx: TargetContext) -> list[FindingCandidate]:
+        out: list[FindingCandidate] = []
+        for path, src in ctx.source_files.items():
+            if not src:
+                continue
+            for fname, params, tail, body in iter_function_bodies(src):
+                if not re.search(r"\b(public|external)\b", tail):
+                    continue
+                arr_names = re.findall(r"\[\s*\]\s*(?:memory|calldata|storage)?\s*(\w+)", params)
+                if len(arr_names) < 2:
+                    continue
+                indexed = [n for n in arr_names if re.search(re.escape(n) + r"\s*\[\s*\w+\s*\]", body)]
+                if len(indexed) < 2:
+                    continue
+                if re.search(r"\.length\s*==|==\s*\w+\.length|require\s*\([^;]*\.length", body):
+                    continue
+                out.append(FindingCandidate(
+                    detector=self.name,
+                    title=f"Parallel arrays indexed without a length-equality check: {fname}",
+                    description=(
+                        f"`{fname}` takes multiple array parameters and indexes more than one by the "
+                        "same loop counter without a require(a.length == b.length). Mismatched "
+                        "lengths cause mid-batch revert (DoS) or misallocation (recurring "
+                        "input-validation class). Add a length-equality require before the loop."
+                    ),
+                    impact_score=5.0, confidence_score=5.0, severity_candidate="medium",
+                    evidence={"function": fname, "file": path, "snippet": body[:1500],
+                              "bug_class": "input_validation", "needs_poc": False, "unprivileged": True},
+                    next_tests=[
+                        "Call with arrays of different lengths; confirm revert/misallocation",
+                        "Add require(arr1.length == arr2.length) and re-test",
+                    ],
+                    affected_functions=[fname]))
+        return out
+
+
+# --------------------------------------------------------------------------- #
+# Liquidation/close transfers collateral without clearing the position record
+# --------------------------------------------------------------------------- #
+class LiquidationCollateralNotClearedDetector(Detector):
+    name = "liquidation_collateral_not_cleared"
+
+    def run(self, ctx: TargetContext) -> list[FindingCandidate]:
+        out: list[FindingCandidate] = []
+        for path, src in ctx.source_files.items():
+            if not src:
+                continue
+            for fname, params, tail, body in iter_function_bodies(src):
+                if not re.search(r"liquidat|close|settle|cancelorder|fillorder|repay", fname, re.I):
+                    continue
+                transfers_pos = re.search(
+                    r"(safeTransfer|transfer|sendValue)\w*\s*\([^;]*\b"
+                    r"(inputAmount|collateral|principal|position|deposited|debt)\w*", body, re.I)
+                if not transfers_pos:
+                    continue
+                cleared = re.search(
+                    r"\b(inputAmount|collateral|principal|position|deposited|debt)\w*\s*(=\s*0\b|-=)"
+                    r"|delete\s+\w*(inputAmount|collateral|principal|position)", body, re.I)
+                if cleared:
+                    continue
+                out.append(FindingCandidate(
+                    detector=self.name,
+                    title=f"Collateral/position transferred out without clearing the record: {fname}",
+                    description=(
+                        f"`{fname}` transfers collateral/position value out but does not zero/delete "
+                        "the per-position state (inputAmount/collateral/principal/debt) that later "
+                        "borrow/solvency math reads. The position record stays as phantom collateral, "
+                        "letting an attacker self-liquidate/close then borrow against value already "
+                        "removed (Abracadabra/MIM class). Zero the position before/after the transfer."
+                    ),
+                    impact_score=8.0, confidence_score=5.5, severity_candidate="high",
+                    evidence={"function": fname, "file": path, "snippet": body[:1500],
+                              "bug_class": "solvency", "needs_poc": True, "unprivileged": True},
+                    next_tests=[
+                        "Fork PoC: open a position, trigger this path, confirm the position record is non-zero after the transfer",
+                        "Then borrow/withdraw against the phantom collateral",
+                    ],
+                    affected_functions=[fname]))
+        return out

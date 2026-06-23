@@ -121,3 +121,31 @@ def test_payable_multicall():
     good = "contract C { function multicall(bytes[] calldata data) external { for(uint i;i<data.length;i++){ address(this).delegatecall(data[i]); } } }"
     assert PayableMulticallMsgValueReuseDetector().run(_ctx(bad))
     assert not PayableMulticallMsgValueReuseDetector().run(_ctx(good))
+
+
+from backend.detectors.ultra_deep import (
+    BatchArrayLengthMismatchDetector,
+    LiquidationCollateralNotClearedDetector,
+    SignedUnsignedCastMismatchDetector,
+)
+
+
+def test_signed_unsigned_cast():
+    bad = "contract C { function f(int amount, uint minOut) external { uint got = uint(amount); require(got >= minOut); } }"
+    good = "contract C { function f(int amount, uint minOut) external { require(amount >= 0); uint got = uint(amount); require(got >= minOut); } }"
+    assert SignedUnsignedCastMismatchDetector().run(_ctx(bad))
+    assert not SignedUnsignedCastMismatchDetector().run(_ctx(good))
+
+
+def test_batch_array_length():
+    bad = "contract C { function airdrop(address[] calldata to, uint[] calldata amt) external { for(uint i;i<to.length;i++){ pay(to[i], amt[i]); } } function pay(address,uint) internal {} }"
+    good = "contract C { function airdrop(address[] calldata to, uint[] calldata amt) external { require(to.length==amt.length); for(uint i;i<to.length;i++){ pay(to[i], amt[i]); } } function pay(address,uint) internal {} }"
+    assert BatchArrayLengthMismatchDetector().run(_ctx(bad))
+    assert not BatchArrayLengthMismatchDetector().run(_ctx(good))
+
+
+def test_liquidation_not_cleared():
+    bad = "contract C { struct O{uint inputAmount;} mapping(uint=>O) ords; function closeOrder(uint id) external { collateralToken.safeTransfer(msg.sender, ords[id].inputAmount); } }"
+    good = "contract C { struct O{uint inputAmount;} mapping(uint=>O) ords; function closeOrder(uint id) external { uint a=ords[id].inputAmount; ords[id].inputAmount=0; collateralToken.safeTransfer(msg.sender, a); } }"
+    assert LiquidationCollateralNotClearedDetector().run(_ctx(bad))
+    assert not LiquidationCollateralNotClearedDetector().run(_ctx(good))

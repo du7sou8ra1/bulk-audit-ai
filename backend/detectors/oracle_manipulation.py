@@ -32,6 +32,8 @@ _BAL_PRICE_RE = re.compile(
     r"balanceOf\s*\([^)]*\)\s*[*/]|[*/]\s*[\w.]*balanceOf\s*\(", re.IGNORECASE
 )
 _PRICEY_RE = re.compile(r"price|value|reward|share|rate|amountOut|collateral", re.IGNORECASE)
+# ULTRA: spot price tainted into a lending sink even without a "price" word nearby.
+_LENDING_SINK_RE = re.compile(r"\b(_?mint|borrow|liquidat|seize|redeem|setcollateral)\w*", re.IGNORECASE)
 
 # ORC-MEDIAN-SPOT: an aggregated oracle (median/min/max of N feeds) is only as safe
 # as its weakest manipulable input. UwU Lend ($23M): median of 11 feeds, several raw
@@ -70,6 +72,7 @@ class OracleManipulationDetector(Detector):
         if not text:
             return []
         low = text.lower()
+        ultra = getattr(ctx, "profile", "") == "ultra-deep"
         if sum(1 for mk in _DEFI_MARKERS if mk in low) < 2:
             return []
 
@@ -80,7 +83,8 @@ class OracleManipulationDetector(Detector):
             for fname, _params, tail, body in iter_function_bodies(source):
                 lname = fname.lower()
                 # 1) spot price feeding a valuation/reward
-                if _SPOT_RE.search(body) and _PRICEY_RE.search(body):
+                if _SPOT_RE.search(body) and (_PRICEY_RE.search(body)
+                        or (ultra and _LENDING_SINK_RE.search(body))):
                     findings.append(self._c(
                         fname, path, body,
                         title=f"Spot AMM price used for valuation without TWAP: {fname}",
@@ -88,7 +92,7 @@ class OracleManipulationDetector(Detector):
                               "and uses it in a price/value/reward calculation. Spot prices are "
                               "flash-loan manipulable within a single transaction (YieldBlox/Venus/"
                               "BlindBox class). A TWAP or a manipulation-resistant oracle is needed."),
-                        impact=8.5, conf=5.0, bug="oracle",
+                        impact=8.5, conf=(7.0 if ultra else 5.0), bug="oracle",
                         tests=["Fork-simulate a flash-loan that skews the pool, then call this fn",
                                "Confirm price source is TWAP/Chainlink with staleness checks"]))
                 # 2) named getTwapPrice but reads spot (BlindBox)

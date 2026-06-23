@@ -43,6 +43,9 @@ from .ultra_deep import (
     PayableMulticallMsgValueReuseDetector,
     ReinitializableProxyDelegatecallDetector,
     VaultShareDonationInflationDetector,
+    BatchArrayLengthMismatchDetector,
+    LiquidationCollateralNotClearedDetector,
+    SignedUnsignedCastMismatchDetector,
 )
 
 # Fully-implemented MVP detectors (access-control / proxy / governance core).
@@ -120,6 +123,9 @@ ULTRA_EXTRA_DETECTORS: list[type[Detector]] = [
     Erc2771MsgSenderSpoofDetector,
     ReinitializableProxyDelegatecallDetector,
     PayableMulticallMsgValueReuseDetector,
+    SignedUnsignedCastMismatchDetector,
+    BatchArrayLengthMismatchDetector,
+    LiquidationCollateralNotClearedDetector,
 ]
 
 _PROFILE_MAP: dict[str, list[type[Detector]]] = {
