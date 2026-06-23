@@ -13,8 +13,8 @@ def test_schema_profiles_match_registry():
     assert set(SCAN_PROFILES) == set(PROFILE_NAMES)
 
 
-def test_single_deep_mode_is_the_only_profile():
-    assert PROFILE_NAMES == ["deep"]
+def test_deep_and_ultradeep_are_the_two_profiles():
+    assert PROFILE_NAMES == ["deep", "ultra-deep"]
 
 
 def test_deep_runs_every_detector():

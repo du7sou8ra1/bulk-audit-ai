@@ -99,8 +99,15 @@ FULL_DETECTORS: list[type[Detector]] = [
     PrivacyPoolDetector,
 ]
 
+# New detectors that run ONLY under ultra-deep (deep stays frozen). Filled as the
+# 2020-2026 enhancement wave lands.
+ULTRA_EXTRA_DETECTORS: list[type[Detector]] = []
+
 _PROFILE_MAP: dict[str, list[type[Detector]]] = {
+    # "deep" = the current engine, FROZEN. "ultra-deep" = deep + ctx.profile-gated
+    # enhanced heuristics in existing detectors + ULTRA_EXTRA_DETECTORS new classes.
     "deep": FULL_DETECTORS,
+    "ultra-deep": FULL_DETECTORS + ULTRA_EXTRA_DETECTORS,
 }
 
 

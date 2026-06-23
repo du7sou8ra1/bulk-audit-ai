@@ -17,7 +17,7 @@ def test_unknown_profile_coerced_to_deep():
     assert req.scan_profile == "deep"
 
 
-def test_deep_is_the_only_valid_profile():
-    # single-mode build: 'deep' is the one and only profile
-    assert SCAN_PROFILES == ["deep"]
+def test_deep_and_ultradeep_valid():
+    assert SCAN_PROFILES == ["deep", "ultra-deep"]
     CreateScanRequest(scan_profile="deep")
+    CreateScanRequest(scan_profile="ultra-deep")

@@ -56,6 +56,46 @@ _INIT_GUARD_RE = re.compile(r"initializer|reinitializer|_disableInitializers|"
 _TXORIGIN_RE = re.compile(r"tx\.origin\s*==|==\s*tx\.origin|require\s*\([^)]*tx\.origin", re.IGNORECASE)
 
 
+
+
+# --- ultra-deep additions (deep behavior is unchanged) --------------------- #
+# Compound-style policy callbacks that only read+revert -> not a real privileged
+# write; suppressed under ultra-deep to kill the mintAllowed/seizeVerify FP class.
+_POLICY_HOOK_RE = re.compile(r"(allowed|verify|hook|callback)$", re.IGNORECASE)
+_MODIFIER_DEF_RE = re.compile(r"\bmodifier\s+([A-Za-z_]\w*)\s*(?:\([^)]*\))?\s*\{", re.MULTILINE)
+# A modifier whose body references an auth concept is an access guard, so a custom
+# modifier name like `onlyRevestController` is resolved instead of FP-flagged.
+_GUARD_BODY_RE = re.compile(
+    r"msg\.sender|tx\.origin|hasRole|_check(?:Owner|Role|Admin|Access|Auth|Govern)\w*|"
+    r"\bonlyRole\b|roles?\s*\[|\bowner\b|\badmin\b|govern|operator|manager|minter|"
+    r"controller|authoriz",
+    re.IGNORECASE,
+)
+
+
+def _guard_modifiers(source: str) -> set[str]:
+    """Names of modifiers whose body performs an auth/guard check, so a function
+    carrying such a (possibly custom-named) modifier is access-controlled."""
+    from .base import strip_comments
+    src = strip_comments(source or "")
+    out: set[str] = set()
+    for m in _MODIFIER_DEF_RE.finditer(src):
+        start = m.end() - 1
+        depth, i, n = 0, start, len(src)
+        while i < n:
+            c = src[i]
+            if c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            i += 1
+        if _GUARD_BODY_RE.search(src[start:i + 1]):
+            out.add(m.group(1))
+    return out
+
+
 class AccessControlDetector(Detector):
     name = "access_control"
 
@@ -63,6 +103,8 @@ class AccessControlDetector(Detector):
         findings: list[FindingCandidate] = []
         low = ctx.all_source_text().lower()
         is_uups = "uupsupgradeable" in low or "upgradeto" in low
+        ultra = getattr(ctx, "profile", "") == "ultra-deep"
+        guard_mods = _guard_modifiers(ctx.all_source_text()) if ultra else set()
         for path, source in ctx.source_files.items():
             if not source:
                 continue
@@ -96,6 +138,10 @@ class AccessControlDetector(Detector):
                 if not ext:
                     continue
                 guarded = header_has_access_control(tail) or bool(_INLINE_AUTH_RE.search(body))
+                if ultra and not guarded and guard_mods and any(
+                    re.search(r"\b" + re.escape(gm) + r"\b", tail) for gm in guard_mods
+                ):
+                    guarded = True  # custom guard modifier resolved
 
                 # tx.origin auth (phishable)
                 if _TXORIGIN_RE.search(body):
@@ -119,11 +165,13 @@ class AccessControlDetector(Detector):
                                "Confirm the implementation calls _disableInitializers in its constructor"]))
 
                 # privileged state-changer with no access control
-                if _PRIV_RE.match(lname) and not guarded and not lname.startswith(("get", "view", "is", "preview")):
+                if _PRIV_RE.match(lname) and not guarded \
+                        and not (ultra and _POLICY_HOOK_RE.search(lname)) \
+                        and not lname.startswith(("get", "view", "is", "preview")):
                     # require it actually changes state / moves value (avoid pure getters)
                     if re.search(r"=|\.transfer|\.call|_mint|_burn|delete\b|push\s*\(", body):
                         findings.append(self._c(
-                            fname, path, body, bug="access_control", impact=9.0, conf=5.0,
+                            fname, path, body, bug="access_control", impact=9.0, conf=(8.0 if ultra else 5.0),
                             title=f"Privileged function with no access control: {fname}",
                             desc=(f"`{fname}` is externally callable, mutates state/moves value, and "
                                   "no access-control modifier or `require(msg.sender==...)` was found. "
