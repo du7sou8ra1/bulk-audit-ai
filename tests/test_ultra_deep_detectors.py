@@ -68,3 +68,56 @@ def test_arbitrary_from():
             "{ IERC20(token).transferFrom(msg.sender,address(this),amt);} }")
     assert ArbitraryFromTransferFromDetector().run(_ctx(bad))
     assert not ArbitraryFromTransferFromDetector().run(_ctx(good))
+
+
+from backend.detectors.ultra_deep import (
+    CrossChainReceiverSourceAuthDetector,
+    Erc2771MsgSenderSpoofDetector,
+    PayableMulticallMsgValueReuseDetector,
+    ReinitializableProxyDelegatecallDetector,
+    VaultShareDonationInflationDetector,
+)
+
+
+def test_cross_chain_receiver():
+    bad = ("contract C { function _lzReceive(uint32 s,bytes32 g,bytes calldata m,address e,bytes calldata x) "
+           "internal { _credit(abi.decode(m,(uint))); } function _credit(uint) internal {} }")
+    good = ("contract C { mapping(uint32=>bytes32) peers; function _lzReceive(uint32 s,bytes32 g,bytes calldata m,"
+            "address e,bytes calldata x) internal { require(g==peers[s]); _credit(abi.decode(m,(uint)));} "
+            "function _credit(uint) internal {} }")
+    assert CrossChainReceiverSourceAuthDetector().run(_ctx(bad))
+    assert not CrossChainReceiverSourceAuthDetector().run(_ctx(good))
+
+
+def test_vault_donation():
+    bad = ("contract V { uint public totalSupply; IERC20 token; function deposit(uint a) external "
+           "{ uint s = totalSupply==0 ? a : a*totalSupply/token.balanceOf(address(this)); _mint(msg.sender,s);} "
+           "function _mint(address,uint) internal {} }")
+    good = ("contract V { uint public totalSupply; uint _totalAssets; function deposit(uint a) external "
+            "{ uint s = a*(totalSupply+1000000)/(_totalAssets+1); _totalAssets+=a; _mint(msg.sender,s);} "
+            "function _mint(address,uint) internal {} }")
+    assert VaultShareDonationInflationDetector().run(_ctx(bad))
+    assert not VaultShareDonationInflationDetector().run(_ctx(good))
+
+
+def test_erc2771_spoof():
+    bad = ("contract C is ERC2771Context, Multicall { mapping(address=>uint) bal; "
+           "function spend(uint a) external { bal[_msgSender()]-=a; } "
+           "function multicall(bytes[] calldata data) external { for(uint i;i<data.length;i++){ address(this).delegatecall(data[i]); } } }")
+    good = "contract C is ERC2771Context { mapping(address=>uint) bal; function spend(uint a) external { bal[_msgSender()]-=a; } }"
+    assert Erc2771MsgSenderSpoofDetector().run(_ctx(bad))
+    assert not Erc2771MsgSenderSpoofDetector().run(_ctx(good))
+
+
+def test_reinit_proxy():
+    bad = "contract P { address logic; function initialize(address _logic) external { logic=_logic; } fallback() external { logic.delegatecall(msg.data); } }"
+    good = "contract P { address logic; function initialize(address _logic) external initializer { logic=_logic; } fallback() external { logic.delegatecall(msg.data); } }"
+    assert ReinitializableProxyDelegatecallDetector().run(_ctx(bad))
+    assert not ReinitializableProxyDelegatecallDetector().run(_ctx(good))
+
+
+def test_payable_multicall():
+    bad = "contract C { function multicall(bytes[] calldata data) external payable { for(uint i;i<data.length;i++){ address(this).delegatecall(data[i]); } } }"
+    good = "contract C { function multicall(bytes[] calldata data) external { for(uint i;i<data.length;i++){ address(this).delegatecall(data[i]); } } }"
+    assert PayableMulticallMsgValueReuseDetector().run(_ctx(bad))
+    assert not PayableMulticallMsgValueReuseDetector().run(_ctx(good))

@@ -36,8 +36,13 @@ from .token_logic import TokenLogicDetector
 from .zk_verifier import ZkVerifierDetector
 from .ultra_deep import (
     ArbitraryFromTransferFromDetector,
+    CrossChainReceiverSourceAuthDetector,
     Eip1271SpoofDetector,
     EcrecoverZeroDetector,
+    Erc2771MsgSenderSpoofDetector,
+    PayableMulticallMsgValueReuseDetector,
+    ReinitializableProxyDelegatecallDetector,
+    VaultShareDonationInflationDetector,
 )
 
 # Fully-implemented MVP detectors (access-control / proxy / governance core).
@@ -110,6 +115,11 @@ ULTRA_EXTRA_DETECTORS: list[type[Detector]] = [
     EcrecoverZeroDetector,
     Eip1271SpoofDetector,
     ArbitraryFromTransferFromDetector,
+    CrossChainReceiverSourceAuthDetector,
+    VaultShareDonationInflationDetector,
+    Erc2771MsgSenderSpoofDetector,
+    ReinitializableProxyDelegatecallDetector,
+    PayableMulticallMsgValueReuseDetector,
 ]
 
 _PROFILE_MAP: dict[str, list[type[Detector]]] = {
