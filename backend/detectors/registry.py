@@ -34,6 +34,11 @@ from .time_logic import TimeLogicDetector
 from .timelock_roles import TimelockRolesDetector
 from .token_logic import TokenLogicDetector
 from .zk_verifier import ZkVerifierDetector
+from .ultra_deep import (
+    ArbitraryFromTransferFromDetector,
+    Eip1271SpoofDetector,
+    EcrecoverZeroDetector,
+)
 
 # Fully-implemented MVP detectors (access-control / proxy / governance core).
 MVP_DETECTORS: list[type[Detector]] = [
@@ -101,7 +106,11 @@ FULL_DETECTORS: list[type[Detector]] = [
 
 # New detectors that run ONLY under ultra-deep (deep stays frozen). Filled as the
 # 2020-2026 enhancement wave lands.
-ULTRA_EXTRA_DETECTORS: list[type[Detector]] = []
+ULTRA_EXTRA_DETECTORS: list[type[Detector]] = [
+    EcrecoverZeroDetector,
+    Eip1271SpoofDetector,
+    ArbitraryFromTransferFromDetector,
+]
 
 _PROFILE_MAP: dict[str, list[type[Detector]]] = {
     # "deep" = the current engine, FROZEN. "ultra-deep" = deep + ctx.profile-gated
