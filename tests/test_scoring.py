@@ -67,3 +67,18 @@ def test_tool_agreement_raises_confidence():
         tool_findings=[{"check": "controlled-delegatecall", "description": "delegatecall to user input"}],
     )
     assert agree.confidence_score > base.confidence_score
+
+
+def test_ultra_deep_floor_keeps_refuted_structural_lead():
+    # The over-refutation fix: under ultra-deep a refuted STRUCTURAL lead is kept at
+    # investigation level instead of being zeroed (the SOF burn-before-sync class).
+    cand = FindingCandidate(
+        detector="hook_pair_burn_sync", title="x", description="x",
+        impact_score=9.0, confidence_score=7.0,
+        evidence={"refuted": True, "onchain_detectable": "confirmable"})
+    deep = score_finding(cand, [], profile="deep")
+    assert deep.confidence_score <= 2.0
+    assert deep.classification == Classification.LOW_OR_INFO
+    ultra = score_finding(cand, [], profile="ultra-deep")
+    assert ultra.confidence_score >= 4.0
+    assert ultra.classification == Classification.NEEDS_MORE_INVESTIGATION

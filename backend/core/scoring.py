@@ -40,6 +40,18 @@ _TOOL_AGREEMENT_KEYWORDS = {
     ),
 }
 
+# Detectors that emit STRUCTURAL findings (a concrete code pattern, not a fuzzy
+# guess). Under ultra-deep the AI judge may downgrade these but not zero them.
+_STRUCTURAL_DETECTORS = frozenset({
+    "hook_pair_burn_sync", "reentrancy", "solvency_check", "access_control",
+    "flashloan_governance", "deposit_callback_cei", "receiver_hook_credit",
+    "ecrecover_zero", "eip1271_spoof", "arbitrary_from_transferfrom",
+    "cross_chain_receiver_source_auth", "vault_share_donation_inflation",
+    "erc2771_msgsender_spoof", "reinitializable_proxy_delegatecall",
+    "payable_multicall_msgvalue_reuse", "signed_unsigned_cast_mismatch",
+    "liquidation_collateral_not_cleared",
+})
+
 
 @dataclass
 class ScoreResult:
@@ -97,7 +109,8 @@ def _tool_agreement(candidate: FindingCandidate, tool_findings: list[dict]) -> b
 
 
 def score_finding(
-    candidate: FindingCandidate, tool_findings: list[dict] | None = None
+    candidate: FindingCandidate, tool_findings: list[dict] | None = None,
+    profile: str = "deep",
 ) -> ScoreResult:
     tool_findings = tool_findings or []
     impact = _clamp(candidate.impact_score)
@@ -142,12 +155,27 @@ def score_finding(
     # Adversarial refutation (gap #3): an independent skeptic read the code and
     # disproved exploitability -> hard-cap so it cannot reach a critical bucket.
     refutation = ev.get("refutation") or {}
+    _structural = (
+        candidate.detector in _STRUCTURAL_DETECTORS
+        or ev.get("onchain_detectable") == "confirmable"
+    )
     if ev.get("refuted"):
-        conf = min(conf, 2.0)
-        notes.append(
-            "capped: refuted by adversarial review — "
-            + str(refutation.get("refutation", "not unprivileged-exploitable"))[:160]
-        )
+        if profile == "ultra-deep" and _structural and not ev.get("suppressed"):
+            # ULTRA-DEEP rank-1 floor: the AI judge may DOWNGRADE a structural
+            # lead but may NOT zero it. A refuted structural finding is kept at
+            # investigation level so real leads (the SOF burn-before-sync class)
+            # are not buried at conf-2.0; a human must cite the actual guard.
+            conf = 4.0
+            notes.append(
+                "ultra-deep floor: refuted STRUCTURAL lead kept at "
+                "NEEDS_INVESTIGATION (AI downgrade allowed, not deletion)"
+            )
+        else:
+            conf = min(conf, 2.0)
+            notes.append(
+                "capped: refuted by adversarial review — "
+                + str(refutation.get("refutation", "not unprivileged-exploitable"))[:160]
+            )
     elif refutation.get("attempted") and refutation.get("is_real") and not ev.get("poc_passed"):
         # Survived refutation but still unproven -> small, bounded confidence bump.
         conf += 1

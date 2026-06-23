@@ -448,7 +448,7 @@ async def process_target(
             except Exception as exc:
                 logger.warning("refuter failed on %s: %s", address, exc)
 
-        score = score_finding(cand, all_tool_findings)
+        score = score_finding(cand, all_tool_findings, profile=profile)
 
         # Generate + run a read-only fork PoC for strong, eligible candidates.
         if (
@@ -485,7 +485,7 @@ async def process_target(
                         {"type": "tool_update", "target_id": target_id,
                          "tool": "foundry-poc", "status": runner.status, "summary": poc.get("note")},
                     )
-                score = score_finding(cand, all_tool_findings)  # re-score with PoC
+                score = score_finding(cand, all_tool_findings, profile=profile)  # re-score with PoC
                 _log(
                     scan_id,
                     f"[{address}] PoC {'PASSED' if poc.get('passed') else 'inconclusive'}: "
@@ -534,7 +534,7 @@ async def process_target(
                     hub.publish(scan_id, {
                         "type": "tool_update", "target_id": target_id, "tool": "oracle-sim",
                         "status": runner.status, "summary": sim.get("note")})
-                score = score_finding(cand, all_tool_findings)  # re-score with confirmation
+                score = score_finding(cand, all_tool_findings, profile=profile)  # re-score with confirmation
                 _log(scan_id, f"[{address}] ORACLE MANIPULATION CONFIRMED: {sim.get('note')}")
 
         packet = evidence_mod.build_ai_packet(ctx, cand, score)
