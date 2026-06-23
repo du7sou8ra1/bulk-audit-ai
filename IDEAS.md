@@ -46,3 +46,28 @@ Not yet implemented (owner: build later, batched). Recall is GOOD across test ru
 
 ## Reserved
 - "ultra-deep" profile name -> reserved for the NEXT wave of NEW detectors.
+
+## From the 2026-exploit-list test run (2026-06-23)
+
+6. **hook_pair_burn_sync misses real deflationary tokens (SOF).**
+   SOF (BSC 0xaeB414...08dF42, verified, 10 files) is a burn-before-sync reflection
+   token; it references balanceOf(pair) and calls sync(). The dedicated
+   hook_pair_burn_sync detector did NOT fire — only fot_swap_bounds (conf 5 on
+   swapTokenForUsdt) flagged the area, and the AI then refuted it. Fix: make
+   hook_pair_burn_sync match a token `_transfer`/burn that reduces the pair's balance
+   (balanceOf(pair)) without an immediate pair.sync().
+
+7. **AI classifier over-refutes to conf-2.0 "False positive".**
+   The refuter stamps almost everything FALSE_POSITIVE @ conf 2.0, burying real leads
+   (SOF fot_swap_bounds 5.0 -> 2.0). It is CORRECT on standard library code
+   (PancakePair FPs), so the fix is to distinguish standard/audited code (kill) from
+   project-specific economic leads (keep as NEEDS_INVESTIGATION). Tie into the
+   confirmable-shield / cross-signal corroboration already in the codebase.
+
+## Test-list hygiene (blocks testing; not a tool bug)
+- Many "exploit" addresses point at the WRONG contract: TMM (0xc36C71...) resolved to
+  the standard PancakePair (the pool), NOT the buggy token. The burn-without-sync bug
+  is in the TOKEN -> need the vulnerable token/logic address.
+- Movie (0xDf7eD2...) is NOT verified on BscScan -> no source -> untestable.
+- Gemini research prompt must demand the VULNERABLE/verified contract (token or logic),
+  never the pool/pair or an unverified address.
