@@ -5,7 +5,13 @@ Run: PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest tests/test_profiles.py -q
 """
 import pytest
 
-from backend.detectors.registry import PROFILE_NAMES, FULL_DETECTORS, get_detectors
+from backend.detectors.registry import (
+    FULL_DETECTORS,
+    PROFILE_NAMES,
+    ULTRA_DEEP_V2_EXTRA_DETECTORS,
+    ULTRA_EXTRA_DETECTORS,
+    get_detectors,
+)
 from backend.schemas import SCAN_PROFILES, CreateScanRequest
 
 
@@ -13,8 +19,8 @@ def test_schema_profiles_match_registry():
     assert set(SCAN_PROFILES) == set(PROFILE_NAMES)
 
 
-def test_deep_and_ultradeep_are_the_two_profiles():
-    assert PROFILE_NAMES == ["deep", "ultra-deep"]
+def test_deep_ultradeep_and_v2_profiles():
+    assert PROFILE_NAMES == ["deep", "ultra-deep", "ultra-deep-v2"]
 
 
 def test_deep_runs_every_detector():
@@ -25,6 +31,14 @@ def test_create_scan_accepts_deep():
     req = CreateScanRequest(scan_profile="deep", addresses_blob="0x" + "11" * 20)
     assert req.scan_profile == "deep"
     assert get_detectors("deep")
+
+
+def test_ultra_deep_v2_superset():
+    ultra = {type(d) for d in get_detectors("ultra-deep")}
+    v2 = {type(d) for d in get_detectors("ultra-deep-v2")}
+    assert ultra <= v2
+    assert {cls for cls in ULTRA_DEEP_V2_EXTRA_DETECTORS} <= v2
+    assert len(get_detectors("ultra-deep")) == len(set(FULL_DETECTORS + ULTRA_EXTRA_DETECTORS))
 
 
 def test_unknown_profile_coerced_and_never_degrades():

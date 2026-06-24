@@ -82,3 +82,6 @@ def test_ultra_deep_floor_keeps_refuted_structural_lead():
     ultra = score_finding(cand, [], profile="ultra-deep")
     assert ultra.confidence_score >= 4.0
     assert ultra.classification == Classification.NEEDS_MORE_INVESTIGATION
+    v2 = score_finding(cand, [], profile="ultra-deep-v2")
+    assert v2.confidence_score >= 4.0
+    assert v2.classification == Classification.NEEDS_MORE_INVESTIGATION

@@ -47,6 +47,15 @@ from .ultra_deep import (
     LiquidationCollateralNotClearedDetector,
     SignedUnsignedCastMismatchDetector,
 )
+from .ultra_deep_v2 import (
+    AllowanceDrainRouterDetector,
+    BridgeRetryDomainBindingDetector,
+    ComponentShareAccountingDetector,
+    DecimalUnitMismatchDetector,
+    SettlementBoundaryMismatchDetector,
+    SingleVerifierBridgeConfigDetector,
+    ZeroValueTransferFromBypassDetector,
+)
 
 # Fully-implemented MVP detectors (access-control / proxy / governance core).
 MVP_DETECTORS: list[type[Detector]] = [
@@ -128,11 +137,22 @@ ULTRA_EXTRA_DETECTORS: list[type[Detector]] = [
     LiquidationCollateralNotClearedDetector,
 ]
 
+ULTRA_DEEP_V2_EXTRA_DETECTORS: list[type[Detector]] = [
+    SettlementBoundaryMismatchDetector,
+    BridgeRetryDomainBindingDetector,
+    DecimalUnitMismatchDetector,
+    ZeroValueTransferFromBypassDetector,
+    ComponentShareAccountingDetector,
+    SingleVerifierBridgeConfigDetector,
+    AllowanceDrainRouterDetector,
+]
+
 _PROFILE_MAP: dict[str, list[type[Detector]]] = {
     # "deep" = the current engine, FROZEN. "ultra-deep" = deep + ctx.profile-gated
     # enhanced heuristics in existing detectors + ULTRA_EXTRA_DETECTORS new classes.
     "deep": FULL_DETECTORS,
     "ultra-deep": FULL_DETECTORS + ULTRA_EXTRA_DETECTORS,
+    "ultra-deep-v2": FULL_DETECTORS + ULTRA_EXTRA_DETECTORS + ULTRA_DEEP_V2_EXTRA_DETECTORS,
 }
 
 

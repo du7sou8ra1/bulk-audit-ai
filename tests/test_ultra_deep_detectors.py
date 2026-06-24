@@ -34,6 +34,7 @@ SAFE_TOKEN = ("contract T { mapping(address=>uint) b; "
 def test_hook_burn_before_sync_fires_only_in_ultra():
     d = HookPairBurnSyncDetector()
     assert d.run(_ctx(SOF_LIKE, "ultra-deep"))        # ultra catches burn-without-sync
+    assert d.run(_ctx(SOF_LIKE, "ultra-deep-v2"))     # v2 inherits ultra behavior
     assert not d.run(_ctx(SOF_LIKE, "deep"))          # deep frozen (it required sync too)
     assert not d.run(_ctx(SAFE_TOKEN, "ultra-deep"))  # no pair reduce -> silent
 

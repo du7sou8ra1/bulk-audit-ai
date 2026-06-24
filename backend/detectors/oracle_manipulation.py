@@ -18,7 +18,13 @@ from __future__ import annotations
 
 import re
 
-from .base import Detector, FindingCandidate, TargetContext, iter_function_bodies
+from .base import (
+    Detector,
+    FindingCandidate,
+    TargetContext,
+    is_ultra_profile,
+    iter_function_bodies,
+)
 
 _DEFI_MARKERS = ("price", "oracle", "reward", "share", "collateral", "swap",
                  "reserve", "twap", "value", "redeem", "borrow", "liquidat")
@@ -72,7 +78,7 @@ class OracleManipulationDetector(Detector):
         if not text:
             return []
         low = text.lower()
-        ultra = getattr(ctx, "profile", "") == "ultra-deep"
+        ultra = is_ultra_profile(getattr(ctx, "profile", ""))
         if sum(1 for mk in _DEFI_MARKERS if mk in low) < 2:
             return []
 

@@ -16,6 +16,13 @@ if TYPE_CHECKING:  # avoid import cycles at runtime
     from ..core.proxy_resolver import ProxyInfo
 
 
+ULTRA_FAMILY_PROFILES = frozenset({"ultra-deep", "ultra-deep-v2"})
+
+
+def is_ultra_profile(profile: str) -> bool:
+    return profile in ULTRA_FAMILY_PROFILES
+
+
 # --------------------------------------------------------------------------- #
 @dataclass
 class FindingCandidate:

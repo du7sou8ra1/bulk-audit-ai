@@ -17,8 +17,9 @@ const CHAINS = [
 // Fallback only — the live list is fetched from /api/scan-profiles so the dropdown
 // can never drift from the backend registry.
 const FALLBACK_PROFILES: ScanProfile[] = [
-  // single-mode build: 'deep' is the only profile (runs every detector).
   { value: 'deep', label: 'Deep' },
+  { value: 'ultra-deep', label: 'Ultra-deep (2026 exploit classes)' },
+  { value: 'ultra-deep-v2', label: 'Ultra deep v2' },
 ]
 
 const TOOL_DEFS: { key: keyof Toggles; label: string; hint: string }[] = [

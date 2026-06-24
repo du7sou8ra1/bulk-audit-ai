@@ -67,6 +67,7 @@ _PROFILE_LABELS = {
     "standard": "Standard",
     "deep": "Deep",
     "ultra-deep": "Ultra-deep (2026 exploit classes)",
+    "ultra-deep-v2": "Ultra deep v2",
     "defi-deep": "DeFi-deep",
     "oracle-focused": "Oracle-focused",
     "governance-focused": "Governance-focused",

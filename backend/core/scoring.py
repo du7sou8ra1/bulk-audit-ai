@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ..detectors.base import FindingCandidate
+from ..detectors.base import FindingCandidate, is_ultra_profile
 from ..models import Classification
 
 # Detector -> keywords that, if present in a tool finding, count as agreement.
@@ -49,7 +49,8 @@ _STRUCTURAL_DETECTORS = frozenset({
     "cross_chain_receiver_source_auth", "vault_share_donation_inflation",
     "erc2771_msgsender_spoof", "reinitializable_proxy_delegatecall",
     "payable_multicall_msgvalue_reuse", "signed_unsigned_cast_mismatch",
-    "liquidation_collateral_not_cleared",
+    "liquidation_collateral_not_cleared", "allowance_drain_router",
+    "zero_value_transferfrom_bypass",
 })
 
 
@@ -160,7 +161,7 @@ def score_finding(
         or ev.get("onchain_detectable") == "confirmable"
     )
     if ev.get("refuted"):
-        if profile == "ultra-deep" and _structural and not ev.get("suppressed"):
+        if is_ultra_profile(profile) and _structural and not ev.get("suppressed"):
             # ULTRA-DEEP rank-1 floor: the AI judge may DOWNGRADE a structural
             # lead but may NOT zero it. A refuted structural finding is kept at
             # investigation level so real leads (the SOF burn-before-sync class)

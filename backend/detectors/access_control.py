@@ -18,6 +18,7 @@ from .base import (
     FindingCandidate,
     TargetContext,
     header_has_access_control,
+    is_ultra_profile,
     iter_function_bodies,
 )
 
@@ -103,7 +104,7 @@ class AccessControlDetector(Detector):
         findings: list[FindingCandidate] = []
         low = ctx.all_source_text().lower()
         is_uups = "uupsupgradeable" in low or "upgradeto" in low
-        ultra = getattr(ctx, "profile", "") == "ultra-deep"
+        ultra = is_ultra_profile(getattr(ctx, "profile", ""))
         guard_mods = _guard_modifiers(ctx.all_source_text()) if ultra else set()
         for path, source in ctx.source_files.items():
             if not source:

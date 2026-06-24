@@ -17,7 +17,8 @@ def test_unknown_profile_coerced_to_deep():
     assert req.scan_profile == "deep"
 
 
-def test_deep_and_ultradeep_valid():
-    assert SCAN_PROFILES == ["deep", "ultra-deep"]
+def test_deep_ultradeep_and_v2_valid():
+    assert SCAN_PROFILES == ["deep", "ultra-deep", "ultra-deep-v2"]
     CreateScanRequest(scan_profile="deep")
     CreateScanRequest(scan_profile="ultra-deep")
+    CreateScanRequest(scan_profile="ultra-deep-v2")

@@ -10,8 +10,8 @@ import { PageHeader, Spinner, ErrorBox, EmptyState, shortAddr, fmtDate } from '.
 
 const CHAINS = ['ethereum', 'base', 'arbitrum', 'optimism', 'polygon', 'bsc',
   'scroll', 'linea', 'avalanche', 'blast']
-const PROFILES = ['defi-deep', 'deep', 'standard', 'oracle-focused',
-  'bridge-focused', 'zk-focused', 'governance-focused']
+const PROFILES = ['ultra-deep-v2', 'ultra-deep', 'deep', 'defi-deep', 'standard',
+  'oracle-focused', 'bridge-focused', 'zk-focused', 'governance-focused']
 
 const inputCls =
   'w-full rounded-md bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-200 focus:border-emerald-500/60 focus:outline-none'
@@ -30,10 +30,10 @@ export default function Monitor() {
 
   const [wBlob, setWBlob] = useState('')
   const [wChain, setWChain] = useState('ethereum')
-  const [wProfile, setWProfile] = useState('defi-deep')
+  const [wProfile, setWProfile] = useState('ultra-deep-v2')
   const [dBlob, setDBlob] = useState('')
   const [dChain, setDChain] = useState('ethereum')
-  const [dProfile, setDProfile] = useState('defi-deep')
+  const [dProfile, setDProfile] = useState('ultra-deep-v2')
 
   const load = useCallback(async () => {
     setLoading(true)
