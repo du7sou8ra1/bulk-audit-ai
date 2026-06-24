@@ -1,0 +1,60 @@
+BulkAuditAI app tools summary
+
+BulkAuditAI is a defensive smart-contract triage app for bulk review of Ethereum
+contract addresses. It combines a FastAPI backend, a React/Vite/Tailwind
+frontend, local/static security tooling, read-only on-chain probes, scoring,
+evidence capture, exports, and an optional DeepSeek-compatible AI review layer.
+
+Backend and API
+- FastAPI app served from backend.main, with REST routes for scans, targets,
+  findings, settings, monitoring, and live WebSocket scan progress.
+- SQLite-backed models and schemas store scans, targets, findings, tool runs,
+  evidence, settings state, and watch/monitor data.
+
+Scan pipeline
+- scanner orchestrates per-target workspaces and runs source fetching, proxy
+  resolution, static analyzers, custom detectors, on-chain probes, scoring,
+  AI review, evidence capture, and report/export generation.
+- source_fetcher retrieves verified source, ABI, and bytecode through Etherscan
+  style APIs.
+- proxy_resolver checks EIP-1967 proxy slots and implementation/admin metadata.
+- onchain performs read-only RPC calls only; the project is designed not to send
+  transactions or require private keys.
+
+Security tools and runners
+- Slither runner for Solidity static analysis.
+- Mythril runner for symbolic/security analysis when installed.
+- Semgrep runner with Solidity rules in backend/semgrep_rules.
+- Foundry runner for optional local fork probes and generated tests.
+- Echidna runner exists as an optional fuzzing integration path.
+
+Custom detectors
+- Access control, arbitrary calls, arithmetic/time/token logic, bridge
+  accounting, delegatecall, flash-loan governance, governance blast radius,
+  oracle manipulation, permit misuse, privacy pool patterns, proxy upgrades,
+  reentrancy, signature replay, solvency checks, timelock roles, ultra-deep
+  heuristics, exploit-2026 heuristics, and zk verifier checks.
+
+Scoring, AI, and evidence
+- scoring converts impact and confidence into classifications such as
+  CONFIRMED_CRITICAL, LIKELY_CRITICAL_NEEDS_POC, NEEDS_MORE_INVESTIGATION,
+  LOW_OR_INFO, and FALSE_POSITIVE.
+- ai_reviewer and llm integrate with a DeepSeek-compatible model for strict
+  candidate classification, while treating AI output as review input rather
+  than proof.
+- evidence, report_writer, exporter, poc_generator, refuter, dedup, coverage,
+  repo_context, invariant_reasoner, callgraph, flashloan_sim, alerting, monitor,
+  and protocol_grouping support triage, reporting, and operational workflow.
+
+Frontend
+- React/Vite/Tailwind dashboard with pages for new scans, scan detail, contract
+  detail, finding detail, settings, tool health, and monitoring.
+- UI components include address input, side navigation, status/severity/
+  classification badges, progress timeline, finding cards, error boundaries,
+  and tool output viewers.
+
+Developer checks
+- Backend tests are run with: venv/bin/python -m pytest -q
+- Frontend production build is run from frontend with: npm run build
+- VPS single-port mode serves the built UI and API from python -m backend.main,
+  typically on port 8791.
