@@ -50,7 +50,7 @@ _STRUCTURAL_DETECTORS = frozenset({
     "erc2771_msgsender_spoof", "reinitializable_proxy_delegatecall",
     "payable_multicall_msgvalue_reuse", "signed_unsigned_cast_mismatch",
     "liquidation_collateral_not_cleared", "allowance_drain_router",
-    "zero_value_transferfrom_bypass",
+    "zero_value_transferfrom_bypass", "zero_transfer_reward_checkpoint",
 })
 
 

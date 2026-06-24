@@ -10,6 +10,7 @@ from backend.detectors.ultra_deep_v2 import (
     SettlementBoundaryMismatchDetector,
     SingleVerifierBridgeConfigDetector,
     ZeroValueTransferFromBypassDetector,
+    ZeroTransferRewardCheckpointDetector,
 )
 
 
@@ -178,6 +179,72 @@ def test_component_share_accounting():
     d = ComponentShareAccountingDetector()
     assert "component_redeem_live_balance_share_math" in _rules(d, bad)
     assert "component_redeem_live_balance_share_math" not in _rules(d, good)
+
+
+def test_zero_transfer_reward_checkpoint():
+    bad = """
+    contract RoyaltiesLike {
+      struct UcrRecord { uint64 depositId; uint64 ldaBalance; uint128 value; }
+      mapping(uint128 => mapping(address => uint256)) internal _NUM_UCR_RECORDS_;
+      mapping(uint128 => mapping(address => mapping(uint256 => UcrRecord))) internal _UCR_;
+      mapping(uint128 => uint256) internal _NUM_DEPOSITS_;
+      LDA public LDA_TOKEN;
+
+      function beforeLdaTransfer(address from, address to, uint128 tierId) external {
+        require(msg.sender == address(LDA_TOKEN), "lda");
+        if (from != address(0)) { _settleUcr(tierId, from); }
+        if (to != address(0)) { _settleUcr(tierId, to); }
+      }
+
+      function _settleUcr(uint128 tierId, address account) internal returns (uint256) {
+        uint256 lastUcrId = _NUM_UCR_RECORDS_[tierId][account];
+        UcrRecord memory lastUcrRecord = _UCR_[tierId][account][lastUcrId];
+        uint256 lastDepositId = _NUM_DEPOSITS_[tierId];
+        uint256 ldaBalance = LDA_TOKEN.tierBalanceOf(tierId, account);
+        uint256 newUcrValue = lastUcrRecord.value + 1;
+        uint256 newUcrId = lastUcrId + 1;
+        _NUM_UCR_RECORDS_[tierId][account] = newUcrId;
+        _UCR_[tierId][account][newUcrId] = UcrRecord(uint64(lastDepositId), uint64(ldaBalance), uint128(newUcrValue));
+        return newUcrValue;
+      }
+    }
+    """
+    good = """
+    contract RoyaltiesSafe {
+      struct UcrRecord { uint64 depositId; uint64 ldaBalance; uint128 value; }
+      mapping(uint128 => mapping(address => uint256)) internal _NUM_UCR_RECORDS_;
+      mapping(uint128 => mapping(address => mapping(uint256 => UcrRecord))) internal _UCR_;
+      mapping(uint128 => uint256) internal _NUM_DEPOSITS_;
+      LDA public LDA_TOKEN;
+
+      function beforeLdaTransfer(address from, address to, uint128 tierId, uint256 amount) external {
+        require(msg.sender == address(LDA_TOKEN), "lda");
+        require(amount > 0, "zero");
+        if (from != address(0)) { _settleUcr(tierId, from); }
+        if (to != address(0)) { _settleUcr(tierId, to); }
+      }
+
+      function _settleUcr(uint128 tierId, address account) internal returns (uint256) {
+        uint256 lastUcrId = _NUM_UCR_RECORDS_[tierId][account];
+        UcrRecord memory lastUcrRecord = _UCR_[tierId][account][lastUcrId];
+        uint256 lastDepositId = _NUM_DEPOSITS_[tierId];
+        uint256 ldaBalance = LDA_TOKEN.tierBalanceOf(tierId, account);
+        uint256 newUcrValue = lastUcrRecord.value + 1;
+        if (
+          lastUcrRecord.depositId == lastDepositId &&
+          lastUcrRecord.ldaBalance == ldaBalance &&
+          lastUcrRecord.value == newUcrValue
+        ) { return newUcrValue; }
+        uint256 newUcrId = lastUcrId + 1;
+        _NUM_UCR_RECORDS_[tierId][account] = newUcrId;
+        _UCR_[tierId][account][newUcrId] = UcrRecord(uint64(lastDepositId), uint64(ldaBalance), uint128(newUcrValue));
+        return newUcrValue;
+      }
+    }
+    """
+    d = ZeroTransferRewardCheckpointDetector()
+    assert "zero_transfer_stacks_reward_records" in _rules(d, bad)
+    assert "zero_transfer_stacks_reward_records" not in _rules(d, good)
 
 
 def test_single_verifier_bridge_config():

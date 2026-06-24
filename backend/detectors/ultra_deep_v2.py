@@ -4,7 +4,8 @@ These rules are intentionally profile-isolated. They encode high-signal
 structural probes from the 2026 incident corpus that were not covered well by
 the first ultra-deep wave: settlement/proof boundary drift, bridge retry domain
 binding, unit mismatches, zero-value transferFrom gates, component-share
-accounting, single-verifier bridge configs, and allowance-drain routers.
+accounting, single-verifier bridge configs, allowance-drain routers, and
+zero-transfer reward checkpoint farming.
 """
 from __future__ import annotations
 
@@ -333,6 +334,121 @@ class ZeroValueTransferFromBypassDetector(Detector):
                         ],
                         extra={"file": path, "amount_params": sorted(amount_params)},
                     ))
+        return out
+
+
+# --------------------------------------------------------------------------- #
+# Royal Royalties class: zero ERC1155/LDA transfer stacks reward checkpoints
+# --------------------------------------------------------------------------- #
+_TRANSFER_HOOK_NAME = re.compile(
+    r"beforeLdaTransfer|beforeTokenTransfer|_beforeTokenTransfer|afterTokenTransfer|"
+    r"_afterTokenTransfer|onERC1155Received|onERC1155BatchReceived|transferHook",
+    re.I,
+)
+_SETTLE_CALL = re.compile(r"\b(_settle\w*|settle\w*|_checkpoint\w*|checkpoint\w*|_record\w*)\s*\(")
+_RECORD_APPEND = re.compile(
+    r"(_NUM_\w*RECORD\w*|\w*RecordCount|\w*CheckpointCount|\w*Index|\w*Nonce)\w*"
+    r"\s*(?:=|\+=|\+\+)|\.push\s*\(|\[\s*\w+\s*\]\s*=\s*\w*Record\s*\(",
+    re.I,
+)
+_REWARD_RECORD_WRITE = re.compile(
+    r"(_UCR_|_UCE_|_TCR_|\w*Reward\w*|\w*Claim\w*|\w*Royal\w*|\w*Cumulative\w*|"
+    r"\w*Checkpoint\w*|\w*Record\w*)",
+    re.I,
+)
+_HOOK_ZERO_GUARD = re.compile(
+    r"(amount|amt|qty|quantity)\w*\s*>\s*0|"
+    r"(amount|amt|qty|quantity)\w*\s*!=\s*0|"
+    r"0\s*<\s*(amount|amt|qty|quantity)\w*|"
+    r"from\s*!=\s*to|to\s*!=\s*from",
+    re.I,
+)
+_CHECKPOINT_NOOP_GUARD = re.compile(
+    r"return\s*;|"
+    r"last\w*\.(?:depositId|balance|ldaBalance|value)\s*==|"
+    r"==\s*last\w*\.(?:depositId|balance|ldaBalance|value)|"
+    r"new\w*Value\s*==\s*last\w*\.value|"
+    r"lastDepositId\s*==\s*lastSettledDepositId",
+    re.I,
+)
+
+
+class ZeroTransferRewardCheckpointDetector(Detector):
+    name = "zero_transfer_reward_checkpoint"
+
+    def run(self, ctx: TargetContext) -> list[FindingCandidate]:
+        out: list[FindingCandidate] = []
+        for path, src in ctx.source_files.items():
+            if not src:
+                continue
+            bodies = {
+                fname: (params, tail, body)
+                for fname, params, tail, body in iter_function_bodies(src)
+            }
+            for hook_name, params, tail, body in iter_function_bodies(src):
+                if not _TRANSFER_HOOK_NAME.search(hook_name):
+                    continue
+                if not re.search(r"\b(public|external|internal)\b", tail):
+                    continue
+                # ERC1155 and some project hooks allow amount=0 transfers. Hooks
+                # that do not receive an amount cannot filter zero transfers.
+                amount_params = {
+                    p for p in _param_names(params)
+                    if re.search(r"amount|value|qty|quantity", p, re.I)
+                }
+                hook_has_zero_guard = bool(amount_params and _HOOK_ZERO_GUARD.search(body))
+                if hook_has_zero_guard:
+                    continue
+
+                callees = [
+                    m.group(1)
+                    for m in _SETTLE_CALL.finditer(body)
+                    if m.group(1) in bodies
+                ]
+                if not callees:
+                    continue
+
+                for callee in callees:
+                    _cparams, _ctail, cbody = bodies[callee]
+                    appends_record = _RECORD_APPEND.search(cbody) and _REWARD_RECORD_WRITE.search(cbody)
+                    if not appends_record:
+                        continue
+                    # A no-op guard must live on the appending path itself. A
+                    # caller-only guard is not enough when the hook lacks amount.
+                    if _CHECKPOINT_NOOP_GUARD.search(cbody):
+                        continue
+                    out.append(_finding(
+                        self.name,
+                        "zero_transfer_stacks_reward_records",
+                        f"Transfer hook can append reward checkpoints on zero-value transfers: {hook_name}",
+                        (
+                            f"`{hook_name}` calls `{callee}` from a token-transfer hook, but the hook "
+                            "does not enforce a non-zero transferred amount and the settlement path "
+                            "appends/increments reward/accounting records without a duplicate/no-op "
+                            "guard. ERC1155-style zero-value transfers can repeatedly create "
+                            "checkpoints for the same balance/deposit cursor, then claim/settlement "
+                            "math may count the same rewards multiple times (Royal Royalties Polygon "
+                            "class)."
+                        ),
+                        8.5,
+                        6.0,
+                        "high",
+                        "zero_transfer_reward_checkpoint",
+                        hook_name,
+                        lead_only=False,
+                        tests=[
+                            "Fork PoC: perform many ERC1155/LDA safeTransferFrom calls with amount=0 and confirm the checkpoint count increases.",
+                            "After deposits expire or become claimable, call settlement/claim and compare payout against a no-transfer baseline.",
+                            "Confirm the settlement function skips appending when depositId, balance, and cumulative value are unchanged.",
+                        ],
+                        extra={
+                            "file": path,
+                            "hook": hook_name,
+                            "settlement_function": callee,
+                            "amount_params": sorted(amount_params),
+                        },
+                    ))
+                    break
         return out
 
 

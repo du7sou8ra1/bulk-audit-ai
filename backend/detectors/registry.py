@@ -55,6 +55,7 @@ from .ultra_deep_v2 import (
     SettlementBoundaryMismatchDetector,
     SingleVerifierBridgeConfigDetector,
     ZeroValueTransferFromBypassDetector,
+    ZeroTransferRewardCheckpointDetector,
 )
 
 # Fully-implemented MVP detectors (access-control / proxy / governance core).
@@ -145,6 +146,7 @@ ULTRA_DEEP_V2_EXTRA_DETECTORS: list[type[Detector]] = [
     ComponentShareAccountingDetector,
     SingleVerifierBridgeConfigDetector,
     AllowanceDrainRouterDetector,
+    ZeroTransferRewardCheckpointDetector,
 ]
 
 _PROFILE_MAP: dict[str, list[type[Detector]]] = {
