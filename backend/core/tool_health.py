@@ -21,11 +21,13 @@ _TOOLS: list[tuple[str, list[str], list[list[str]]]] = [
     ("solc", ["solc"], [["solc", "--version"]]),
     ("python", ["python", "python3"], [["python", "--version"], ["python3", "--version"]]),
     ("node", ["node"], [["node", "--version"]]),
-    ("echidna", ["echidna", "echidna-test"], [["echidna", "--version"]]),
+    ("echidna", ["echidna", "echidna-test"], [["echidna", "--version"], ["echidna-test", "--version"]]),
+    ("medusa", ["medusa"], [["medusa", "--version"]]),
+    ("halmos", ["halmos"], [["halmos", "--version"]]),
 ]
 
 # Tools that are core vs optional (affects the warning text).
-_OPTIONAL = {"anvil", "solc", "echidna"}
+_OPTIONAL = {"anvil", "solc", "echidna", "medusa", "halmos"}
 
 
 def _first_line(text: str) -> str:

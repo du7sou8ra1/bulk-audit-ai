@@ -30,6 +30,7 @@ export interface Toggles {
   mythril: boolean | null
   semgrep: boolean | null
   foundry: boolean | null
+  fuzzing: boolean | null
   deepseek: boolean | null
 }
 
@@ -150,6 +151,7 @@ export interface Settings {
     mythril: boolean
     semgrep: boolean
     foundry: boolean
+    fuzzing: boolean
     deepseek: boolean
   }
   limits: Record<string, unknown>

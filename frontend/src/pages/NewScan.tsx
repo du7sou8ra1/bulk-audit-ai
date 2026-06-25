@@ -27,6 +27,7 @@ const TOOL_DEFS: { key: keyof Toggles; label: string; hint: string }[] = [
   { key: 'mythril', label: 'Mythril', hint: 'Symbolic execution' },
   { key: 'semgrep', label: 'Semgrep', hint: 'Pattern rules' },
   { key: 'foundry', label: 'Foundry simulations', hint: 'On-chain forks' },
+  { key: 'fuzzing', label: 'Fuzzing', hint: 'Readiness + Foundry suite' },
   { key: 'deepseek', label: 'DeepSeek AI review', hint: 'LLM triage' },
 ]
 
@@ -57,6 +58,7 @@ export default function NewScan() {
     mythril: true,
     semgrep: true,
     foundry: false,
+    fuzzing: false,
     deepseek: true,
   })
   const [submitting, setSubmitting] = useState(false)
@@ -85,6 +87,7 @@ export default function NewScan() {
           mythril: toggles.mythril,
           semgrep: toggles.semgrep,
           foundry: toggles.foundry,
+          fuzzing: toggles.fuzzing,
           deepseek: toggles.deepseek,
         },
       })

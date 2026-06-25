@@ -126,6 +126,7 @@ export default function Settings() {
             <ToggleRow label="Mythril" on={data.toggles.mythril} />
             <ToggleRow label="Semgrep" on={data.toggles.semgrep} />
             <ToggleRow label="Foundry" on={data.toggles.foundry} />
+            <ToggleRow label="Fuzzing" on={data.toggles.fuzzing} />
             <ToggleRow label="DeepSeek" on={data.toggles.deepseek} />
           </div>
 

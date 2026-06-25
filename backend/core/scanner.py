@@ -39,6 +39,7 @@ from . import coverage as coverage_mod
 from . import dedup
 from . import evidence as evidence_mod
 from . import flashloan_sim
+from . import fuzzing
 from . import poc_generator
 from . import report_writer
 from .ai_reviewer import review_finding
@@ -366,6 +367,38 @@ async def process_target(
         bytecode=bytecode,
         tool_outputs=tool_outputs,
     )
+
+    if _toggle(toggles, "fuzzing", s.enable_fuzzing):
+        tr = _create_toolrun(target_id, "fuzzing")
+        hub.publish(scan_id, {"type": "tool_update", "target_id": target_id, "tool": "fuzzing", "status": "running"})
+        if not have_source:
+            fuzz_res = _skip_runner("fuzzing", "no verified source/ABI to build fuzz readiness")
+        else:
+            try:
+                _log(scan_id, f"[{address}] fuzzing: readiness + starter suite generation")
+                fuzz_res = await asyncio.to_thread(
+                    fuzzing.run_fuzzing,
+                    ctx,
+                    source_dir=workspace["source"],
+                    out_dir=workspace["fuzz"],
+                    timeout=s.fuzz_timeout,
+                )
+            except Exception as exc:
+                logger.warning("fuzzing failed on %s: %s", address, exc)
+                fuzz_res = _skip_runner("fuzzing", f"runner crashed: {exc}")
+                fuzz_res.status = "failed"
+        tool_outputs["fuzzing"] = {
+            "summary": fuzz_res.summary,
+            "findings": fuzz_res.findings,
+            "status": fuzz_res.status,
+            "meta": fuzz_res.meta,
+        }
+        _finalize_toolrun(tr.id, fuzz_res)
+        hub.publish(
+            scan_id,
+            {"type": "tool_update", "target_id": target_id, "tool": "fuzzing",
+             "status": fuzz_res.status, "summary": fuzz_res.summary},
+        )
 
     all_tool_findings = [
         f for out in tool_outputs.values() for f in (out.get("findings") or [])

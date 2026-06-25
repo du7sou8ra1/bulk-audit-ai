@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import time
 from dataclasses import dataclass, field
+from os import environ
 from pathlib import Path
 
 
@@ -39,8 +40,22 @@ class CommandResult:
 
 
 def which(executable: str) -> str | None:
-    """Resolve an executable on PATH (handles .exe/.cmd on Windows)."""
-    return shutil.which(executable)
+    """Resolve an executable on PATH plus common per-user tool locations."""
+    resolved = shutil.which(executable)
+    if resolved:
+        return resolved
+
+    home = Path(environ.get("HOME") or "~").expanduser()
+    extra_dirs = [
+        home / ".foundry" / "bin",
+        Path("/home/deploy/.foundry/bin"),
+        home / ".local" / "bin",
+    ]
+    for directory in extra_dirs:
+        candidate = directory / executable
+        if candidate.exists() and candidate.is_file():
+            return str(candidate)
+    return None
 
 
 def run_command(
@@ -78,8 +93,9 @@ def run_command(
     exit_code: int | None = None
 
     try:
+        exec_args = [resolved, *args[1:]]
         proc = subprocess.run(
-            args,
+            exec_args,
             cwd=str(cwd) if cwd else None,
             capture_output=True,
             text=True,

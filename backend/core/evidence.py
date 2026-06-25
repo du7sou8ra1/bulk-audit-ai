@@ -31,6 +31,7 @@ def create_target_workspace(scan_id: int, address: str) -> dict[str, Path]:
         "mythril": base / "tools" / "mythril",
         "semgrep": base / "tools" / "semgrep",
         "foundry": base / "tools" / "foundry",
+        "fuzz": base / "tools" / "fuzz",
         "evidence": base / "evidence",
         "ai": base / "ai",
         "reports": base / "reports",

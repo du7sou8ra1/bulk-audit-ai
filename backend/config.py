@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     enable_mythril: bool = Field(default=True, alias="ENABLE_MYTHRIL")
     enable_semgrep: bool = Field(default=True, alias="ENABLE_SEMGREP")
     enable_foundry: bool = Field(default=False, alias="ENABLE_FOUNDRY")
+    enable_fuzzing: bool = Field(default=False, alias="ENABLE_FUZZING")
     enable_deepseek: bool = Field(default=True, alias="ENABLE_DEEPSEEK")
     # --- New reasoning layers (gaps #1/#3/#8) ------------------------------- #
     enable_invariant_reasoner: bool = Field(default=True, alias="ENABLE_INVARIANT_REASONER")
@@ -71,6 +72,7 @@ class Settings(BaseSettings):
     slither_timeout: int = Field(default=180, alias="SLITHER_TIMEOUT")
     semgrep_timeout: int = Field(default=120, alias="SEMGREP_TIMEOUT")
     foundry_timeout: int = Field(default=300, alias="FOUNDRY_TIMEOUT")
+    fuzz_timeout: int = Field(default=180, alias="FUZZ_TIMEOUT")
 
     # --- Server -------------------------------------------------------------
     host: str = Field(default="0.0.0.0", alias="HOST")
@@ -148,6 +150,7 @@ def masked_settings() -> dict:
             "mythril": s.enable_mythril,
             "semgrep": s.enable_semgrep,
             "foundry": s.enable_foundry,
+            "fuzzing": s.enable_fuzzing,
             "deepseek": s.enable_deepseek,
             "invariant_reasoner": s.enable_invariant_reasoner,
             "refutation": s.enable_refutation,
@@ -161,5 +164,6 @@ def masked_settings() -> dict:
             "slither_timeout": s.slither_timeout,
             "semgrep_timeout": s.semgrep_timeout,
             "foundry_timeout": s.foundry_timeout,
+            "fuzz_timeout": s.fuzz_timeout,
         },
     }

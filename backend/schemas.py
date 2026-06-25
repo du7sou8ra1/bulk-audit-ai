@@ -22,6 +22,7 @@ class ScanToggles(BaseModel):
     mythril: bool | None = None
     semgrep: bool | None = None
     foundry: bool | None = None
+    fuzzing: bool | None = None
     deepseek: bool | None = None
 
 
