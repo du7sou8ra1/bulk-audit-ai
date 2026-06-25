@@ -1,11 +1,14 @@
 """Ultra-deep v2 detectors for 2026 exploit variants.
 
 These rules are intentionally profile-isolated. They encode high-signal
-structural probes from the 2026 incident corpus that were not covered well by
-the first ultra-deep wave: settlement/proof boundary drift, bridge retry domain
-binding, unit mismatches, zero-value transferFrom gates, component-share
-accounting, single-verifier bridge configs, allowance-drain routers, and
-zero-transfer reward checkpoint farming.
+structural probes from the 2020-2026 incident corpus that were not covered well
+by the first ultra-deep wave: settlement/proof boundary drift, bridge retry
+domain binding, unit mismatches, zero-value transferFrom gates, component-share
+accounting, single-verifier bridge configs, allowance-drain routers,
+zero-transfer reward checkpoint farming, classic bridge/root failures, compiler
+windows, thin-liquidity oracle surfaces, exchange-rate donations, CLMM boundary
+math, invariant precision loss, unsafe mint math, flash-cycle rounding, and
+custody/provenance risks.
 """
 from __future__ import annotations
 
@@ -620,5 +623,792 @@ class AllowanceDrainRouterDetector(Detector):
                         "Confirm target and selector are constrained to a safe allowlist and that payer/from is msg.sender-bound.",
                     ],
                     extra={"file": path},
+                ))
+        return out
+
+
+# --------------------------------------------------------------------------- #
+# Lendf.Me class: ERC777/token hook reentrancy before balance bookkeeping
+# --------------------------------------------------------------------------- #
+_HOOK_TOKEN_SURFACE = re.compile(
+    r"ERC777|IERC777|tokensToSend|tokensReceived|ERC1820|operatorSend|"
+    r"safeTransferFrom|transferFrom",
+    re.I,
+)
+_DEPOSIT_LIKE = re.compile(r"(deposit|supply|mint|collateral|repay|join|stake)", re.I)
+_TOKEN_TRANSFER_IN = re.compile(r"(?:safeTransferFrom|transferFrom)\s*\(", re.I)
+_BALANCE_BOOKKEEP = re.compile(
+    r"\b(accountTokens|balances?|deposits?|shares?|collateral|credits?|principal|"
+    r"userInfo|supplied|staked)\w*\s*(?:\[[^\]]+\]\s*)?(?:\.\w+\s*)?(?:=|\+=|-=)",
+    re.I,
+)
+_REENTRANCY_LOCK = re.compile(r"nonReentrant|reentrancyGuard|_status|locked", re.I)
+
+
+class Erc777HookBalanceBypassDetector(Detector):
+    name = "erc777_hook_balance_bypass"
+
+    def run(self, ctx: TargetContext) -> list[FindingCandidate]:
+        out: list[FindingCandidate] = []
+        full = ctx.all_source_text()
+        if not _HOOK_TOKEN_SURFACE.search(full):
+            return out
+        for path, src in ctx.source_files.items():
+            if not src:
+                continue
+            for fname, params, tail, body in iter_function_bodies(src):
+                if not re.search(r"\b(public|external)\b", tail):
+                    continue
+                if not _DEPOSIT_LIKE.search(fname) and not _DEPOSIT_LIKE.search(body):
+                    continue
+                if _REENTRANCY_LOCK.search(tail + body[:240]):
+                    continue
+                transfer = _TOKEN_TRANSFER_IN.search(body)
+                if not transfer:
+                    continue
+                write_after = _BALANCE_BOOKKEEP.search(body[transfer.end():])
+                write_before = _BALANCE_BOOKKEEP.search(body[:transfer.start()])
+                if not write_after or write_before:
+                    continue
+                out.append(_finding(
+                    self.name,
+                    "erc777_transfer_hook_before_balance_update",
+                    f"Token transfer hook can re-enter before balance bookkeeping: {fname}",
+                    (
+                        f"`{fname}` pulls tokens with transferFrom/safeTransferFrom before it "
+                        "updates protocol balance/share/collateral accounting and no local "
+                        "reentrancy lock is visible. ERC777-style tokens invoke sender hooks "
+                        "during transferFrom, so a malicious holder can re-enter withdraw/borrow "
+                        "logic while the old balance is still trusted (Lendf.Me / imBTC class)."
+                    ),
+                    9.0,
+                    6.0,
+                    "critical",
+                    "erc777_hook_reentrancy",
+                    fname,
+                    lead_only=False,
+                    tests=[
+                        "Fork/unit PoC: use an ERC777-like token whose tokensToSend hook re-enters withdraw/borrow before the deposit accounting write.",
+                        "Confirm all balance/share effects happen before transferFrom or the whole protocol shares one reentrancy lock.",
+                    ],
+                    extra={"file": path},
+                ))
+        return out
+
+
+# --------------------------------------------------------------------------- #
+# EraLend/Curve class: read-only reentrancy through live reserve/value reads
+# --------------------------------------------------------------------------- #
+_LIVE_RESERVE_READ = re.compile(
+    r"getReserves\s*\(|price_oracle\s*\(|get_virtual_price\s*\(|virtualPrice\s*\(|"
+    r"exchangeRateCurrent\s*\(|balanceOf\s*\(\s*address\s*\(\s*this\s*\)\s*\)|"
+    r"totalSupply\s*\(",
+    re.I,
+)
+_VALUATION_FN = re.compile(r"(price|value|rate|exchange|collateral|liquidat|preview|quote|oracle)", re.I)
+_READ_LOCK = re.compile(r"nonReentrantView|reentrantLock|readLock|lockRead|sync\s*\(", re.I)
+_CACHE_OR_TWAP = re.compile(r"last\w*Price|cached|TWAP|observe\s*\(|cumulative|block\.timestamp\s*-", re.I)
+
+
+class ReadOnlyReserveReentrancyDetector(Detector):
+    name = "read_only_reserve_reentrancy"
+
+    def run(self, ctx: TargetContext) -> list[FindingCandidate]:
+        out: list[FindingCandidate] = []
+        full = ctx.all_source_text()
+        has_external_interaction = bool(re.search(
+            r"\.call\s*\(|safeTransfer|transferFrom|swap\s*\(|mint\s*\(|burn\s*\(",
+            full,
+            re.I,
+        ))
+        if not has_external_interaction:
+            return out
+        for path, src in ctx.source_files.items():
+            if not src:
+                continue
+            for fname, _params, tail, body in iter_function_bodies(src):
+                if not re.search(r"\b(public|external)\b", tail):
+                    continue
+                if not ("view" in tail.lower() or _VALUATION_FN.search(fname)):
+                    continue
+                if not (_VALUATION_FN.search(fname + " " + body) and _LIVE_RESERVE_READ.search(body)):
+                    continue
+                if _READ_LOCK.search(tail + body) or _CACHE_OR_TWAP.search(body):
+                    continue
+                out.append(_finding(
+                    self.name,
+                    "live_reserve_read_without_read_lock",
+                    f"Valuation reads live reserves with no read-only reentrancy guard: {fname}",
+                    (
+                        f"`{fname}` exposes valuation/oracle math from live pool/token reserves "
+                        "instead of cached/TWAP state, and the codebase has external interaction "
+                        "paths. During a token/pool callback, a read-only reentrant call can observe "
+                        "transient reserves and borrow/redeem/liquidate against a false price "
+                        "(EraLend / Curve read-only reentrancy class)."
+                    ),
+                    8.0,
+                    4.0,
+                    "high",
+                    "read_only_reentrancy",
+                    fname,
+                    tests=[
+                        "Build a malicious pool/token callback that calls the valuation function before reserve sync completes.",
+                        "Confirm valuation uses cached/TWAP state or a read lock shared with mutating pool paths.",
+                    ],
+                    extra={"file": path},
+                ))
+        return out
+
+
+# --------------------------------------------------------------------------- #
+# Poly Network class: bridge payload can mutate keeper/validator trust roots
+# --------------------------------------------------------------------------- #
+_KEEPER_SURFACE = re.compile(
+    r"keeper|validator|consensus|committee|epoch|pubkey|publicKey|bookKeeper|"
+    r"EthCrossChainData|putCurEpochConPubKeyBytes",
+    re.I,
+)
+_BRIDGE_EXEC_SURFACE = re.compile(r"(execute|relay|process|verify|crossChain|message|payload)", re.I)
+_DECODED_TARGET_CALL = re.compile(
+    r"abi\.decode[\s\S]{0,420}(target|to|contractAddr|addr|method|selector|data)|"
+    r"\b(target|to|contractAddr|addr)\s*\.\s*call\s*\(",
+    re.I,
+)
+_TARGET_SELECTOR_ALLOWLIST = re.compile(
+    r"allowlist|whitelist|trustedTargets|allowedSelectors?|onlyCrossChainManager|"
+    r"require\s*\([^;]*(target|to|selector|method)[^;]*(==|allowed|trusted)",
+    re.I,
+)
+
+
+class BridgeKeeperMutationDetector(Detector):
+    name = "bridge_keeper_mutation"
+
+    def run(self, ctx: TargetContext) -> list[FindingCandidate]:
+        out: list[FindingCandidate] = []
+        full = ctx.all_source_text()
+        if not _KEEPER_SURFACE.search(full):
+            return out
+        for path, src in ctx.source_files.items():
+            if not src:
+                continue
+            for fname, _params, tail, body in iter_function_bodies(src):
+                if not re.search(r"\b(public|external)\b", tail):
+                    continue
+                if not (_BRIDGE_EXEC_SURFACE.search(fname) or _BRIDGE_EXEC_SURFACE.search(body)):
+                    continue
+                if not _DECODED_TARGET_CALL.search(body):
+                    continue
+                if _TARGET_SELECTOR_ALLOWLIST.search(body):
+                    continue
+                out.append(_finding(
+                    self.name,
+                    "bridge_payload_can_call_keeper_mutator",
+                    f"Cross-chain payload can target keeper/validator mutation paths: {fname}",
+                    (
+                        f"`{fname}` decodes a cross-chain payload into a target/method/calldata "
+                        "and forwards it without a visible target+selector allowlist, while the "
+                        "codebase contains keeper/validator/epoch public-key mutation state. A "
+                        "forged message can retarget the trust root and then authorize arbitrary "
+                        "unlocks (Poly Network EthCrossChainData class)."
+                    ),
+                    9.5,
+                    5.0,
+                    "critical",
+                    "bridge_keeper_mutation",
+                    fname,
+                    tests=[
+                        "Trace whether payload target+selector can reach keeper/public-key setters such as putCurEpochConPubKeyBytes.",
+                        "Fork/unit PoC: relay a crafted payload that changes the validator set, then authorize an unlock with attacker keys.",
+                    ],
+                    extra={"file": path},
+                ))
+        return out
+
+
+# --------------------------------------------------------------------------- #
+# Nomad class: zero/unset bridge root accepted by initialization or gate
+# --------------------------------------------------------------------------- #
+_ROOT_STATE = re.compile(r"(committedRoot|confirmAt|acceptableRoot|knownRoot|rootStatus|messages|roots)", re.I)
+_ZERO_ROOT_SET = re.compile(
+    r"(confirmAt|acceptableRoot|knownRoot|rootStatus|messages|roots)\w*\s*\[[^\]]+\]\s*=\s*(?:true|1)",
+    re.I,
+)
+_ROOT_GATE_V2 = re.compile(
+    r"(require|if)\s*\([^;{]*(confirmAt|acceptableRoot|knownRoot|rootStatus|messages|roots)\w*"
+    r"\s*\[[^\]]+\][^;{]*(?:!=\s*0|==\s*true|>\s*0|\))",
+    re.I,
+)
+_ZERO_ROOT_REJECT_V2 = re.compile(
+    r"(root|messageHash|leaf|_committedRoot)\w*\s*!=\s*(?:bytes32\s*\(\s*0\s*\)|0x0+\b|0\b)"
+    r"|require\s*\([^;]*(root|messageHash|leaf|_committedRoot)\w*[^;]*!=[^;]*(0|bytes32)",
+    re.I,
+)
+
+
+class BridgeZeroRootAcceptanceDetector(Detector):
+    name = "bridge_zero_root_acceptance"
+
+    def run(self, ctx: TargetContext) -> list[FindingCandidate]:
+        out: list[FindingCandidate] = []
+        full = ctx.all_source_text()
+        if not _ROOT_STATE.search(full) or not re.search(r"bridge|replica|message|merkle|root", full, re.I):
+            return out
+        for path, src in ctx.source_files.items():
+            if not src:
+                continue
+            for fname, _params, tail, body in iter_function_bodies(src):
+                rooty = _ROOT_STATE.search(fname + " " + body)
+                if not rooty:
+                    continue
+                init_sets_root = re.search(r"(init|initialize|upgrade|setRoot|accept)", fname, re.I) and _ZERO_ROOT_SET.search(body)
+                process_gates_root = re.search(r"(process|prove|execute|relay|receive|withdraw)", fname, re.I) and _ROOT_GATE_V2.search(body)
+                if not (init_sets_root or process_gates_root):
+                    continue
+                if _ZERO_ROOT_REJECT_V2.search(body):
+                    continue
+                out.append(_finding(
+                    self.name,
+                    "bridge_zero_or_unset_root_can_be_confirmed",
+                    f"Bridge root gate lacks an explicit zero-root rejection: {fname}",
+                    (
+                        f"`{fname}` writes or trusts a root/status mapping without visibly "
+                        "rejecting bytes32(0). If deployment/upgrade initializes the committed "
+                        "root to zero, unproven messages can resolve against the confirmed zero "
+                        "root and be copied by anyone (Nomad Replica class)."
+                    ),
+                    9.5,
+                    6.0,
+                    "critical",
+                    "bridge_zero_root",
+                    fname,
+                    lead_only=False,
+                    tests=[
+                        "Unit/fork PoC: initialize/upgrade with bytes32(0), then process a forged message whose calculated root is zero.",
+                        "Confirm zero roots are rejected on initialization and every processing gate.",
+                    ],
+                    extra={"file": path},
+                ))
+        return out
+
+
+# --------------------------------------------------------------------------- #
+# Wormhole-style class: caller-supplied verifier/precompile/sysvar trust
+# --------------------------------------------------------------------------- #
+_VERIFIER_PARAM = re.compile(r"\baddress\s+(?:payable\s+)?(\w*(?:verifier|validator|sysvar|precompile|core|bridge)\w*)", re.I)
+_VERIFY_LOW_CALL = re.compile(r"\b\w+\s*\.\s*(?:staticcall|call)\s*\(", re.I)
+_VERIFIER_PIN = re.compile(
+    r"trustedVerifier|verifiers?\s*\[|allowedVerifier|codehash|extcodehash|"
+    r"==\s*(?:WORMHOLE|CORE|VERIFIER|trusted|immutable|address\s*\(\s*verifier)",
+    re.I,
+)
+
+
+class VerifierAddressSpoofDetector(Detector):
+    name = "verifier_address_spoof"
+
+    def run(self, ctx: TargetContext) -> list[FindingCandidate]:
+        out: list[FindingCandidate] = []
+        for path, src in ctx.source_files.items():
+            if not src:
+                continue
+            for fname, params, _tail, body in iter_function_bodies(src):
+                verifier_params = set(_VERIFIER_PARAM.findall(params))
+                if not verifier_params:
+                    continue
+                if not re.search(r"verify|signature|vaa|proof|guardian|sysvar", fname + " " + body, re.I):
+                    continue
+                if not _VERIFY_LOW_CALL.search(body):
+                    continue
+                if _VERIFIER_PIN.search(body):
+                    continue
+                if not any(re.search(r"\b" + re.escape(p) + r"\s*\.\s*(?:staticcall|call)\s*\(", body) for p in verifier_params):
+                    continue
+                out.append(_finding(
+                    self.name,
+                    "caller_supplied_verifier_address",
+                    f"Verification path calls a caller-supplied verifier address: {fname}",
+                    (
+                        f"`{fname}` accepts a verifier/sysvar/precompile-like address from the "
+                        "caller and uses low-level call/staticcall for proof/signature validation "
+                        "without a visible allowlist, immutable pin, or codehash/domain check. A "
+                        "spoofed verifier can return success for forged messages (Wormhole "
+                        "verification-provenance class)."
+                    ),
+                    9.0,
+                    5.0,
+                    "critical",
+                    "verifier_address_spoof",
+                    fname,
+                    tests=[
+                        "Pass an attacker verifier contract that returns a successful validation tuple and confirm the message path continues.",
+                        "Confirm verifier address is immutable/allowlisted and the signed domain binds chain, contract, and guardian set.",
+                    ],
+                    extra={"file": path, "verifier_params": sorted(verifier_params)},
+                ))
+        return out
+
+
+# --------------------------------------------------------------------------- #
+# Curve 2023 class: Vyper nonreentrant compiler versions with broken locks
+# --------------------------------------------------------------------------- #
+_VYPER_BAD_VERSION = re.compile(r"#\s*@version\s+(0\.2\.15|0\.2\.16|0\.3\.0)\b", re.I)
+_VYPER_NONREENTRANT = re.compile(r"@nonreentrant(?:\s*\(|\b)", re.I)
+
+
+class VyperNonreentrantCompilerDetector(Detector):
+    name = "vyper_nonreentrant_compiler"
+
+    def run(self, ctx: TargetContext) -> list[FindingCandidate]:
+        out: list[FindingCandidate] = []
+        for path, src in ctx.source_files.items():
+            if not src:
+                continue
+            vm = _VYPER_BAD_VERSION.search(src)
+            if not vm or not _VYPER_NONREENTRANT.search(src):
+                continue
+            first_fn = ""
+            fm = re.search(r"def\s+([A-Za-z_]\w*)\s*\(", src)
+            if fm:
+                first_fn = fm.group(1)
+            out.append(_finding(
+                self.name,
+                "vyper_broken_nonreentrant_version",
+                f"Vyper {vm.group(1)} nonreentrant lock compiler window: {path}",
+                (
+                    f"`{path}` declares Vyper {vm.group(1)} and uses @nonreentrant. Vyper "
+                    "0.2.15, 0.2.16, and 0.3.0 had a compiler bug that could make "
+                    "nonreentrancy locks ineffective, which enabled the Curve pool drains."
+                ),
+                9.0,
+                7.0,
+                "critical",
+                "vyper_nonreentrant_compiler",
+                first_fn,
+                lead_only=False,
+                tests=[
+                    "Confirm deployed bytecode compiler metadata is Vyper 0.2.15/0.2.16/0.3.0.",
+                    "Recompile with a fixed Vyper version and run a reentrancy PoC against the old bytecode.",
+                ],
+                extra={"file": path, "vyper_version": vm.group(1)},
+            ))
+        return out
+
+
+# --------------------------------------------------------------------------- #
+# bZx/Harvest/Cream/Mango/Polter class: thin-liquidity spot oracle
+# --------------------------------------------------------------------------- #
+_SPOT_ORACLE_SOURCE = re.compile(
+    r"getReserves\s*\(|slot0\s*\(|getAmountsOut\s*\(|getAmountOut\s*\(|"
+    r"price_oracle\s*\(|get_dy\s*\(|get_p\s*\(",
+    re.I,
+)
+_ORACLE_SINK = re.compile(r"borrow|liquidat|collateral|mint|redeem|reward|vault|share|price|value", re.I)
+_LIQUIDITY_DEPTH_GUARD = re.compile(
+    r"minLiquidity|minReserve|minimumReserve|liquidityThreshold|depth|TWAP|observe\s*\(|"
+    r"cumulative|secondsAgo|timeWeighted|Chainlink|latestRoundData",
+    re.I,
+)
+
+
+class ThinLiquiditySpotOracleDetector(Detector):
+    name = "thin_liquidity_spot_oracle"
+
+    def run(self, ctx: TargetContext) -> list[FindingCandidate]:
+        out: list[FindingCandidate] = []
+        for path, src in ctx.source_files.items():
+            if not src:
+                continue
+            for fname, _params, _tail, body in iter_function_bodies(src):
+                if not (_SPOT_ORACLE_SOURCE.search(body) and _ORACLE_SINK.search(fname + " " + body)):
+                    continue
+                if _LIQUIDITY_DEPTH_GUARD.search(body):
+                    continue
+                out.append(_finding(
+                    self.name,
+                    "thin_pool_spot_oracle_no_depth_or_twap",
+                    f"Spot AMM oracle lacks TWAP/liquidity-depth guards: {fname}",
+                    (
+                        f"`{fname}` prices collateral/rewards/shares from a spot AMM read but "
+                        "does not visibly enforce reserve depth, liquidity thresholds, or a TWAP. "
+                        "A flash loan can skew a thin pool for one transaction and borrow/redeem/"
+                        "liquidate against the fake price (bZx, Harvest, Cream, Mango, Polter class)."
+                    ),
+                    8.5,
+                    5.5,
+                    "high",
+                    "thin_liquidity_oracle",
+                    fname,
+                    tests=[
+                        "Fork: flash-swap/flash-loan to skew the pool, then call the borrow/redeem/liquidation path.",
+                        "Confirm the oracle enforces TWAP plus minimum liquidity/depth for every route component.",
+                    ],
+                    extra={"file": path},
+                ))
+        return out
+
+
+# --------------------------------------------------------------------------- #
+# Hundred/zkLend class: lending exchange-rate/accumulator donation
+# --------------------------------------------------------------------------- #
+_EXCHANGE_RATE_SURFACE = re.compile(
+    r"exchangeRate|lending_accumulator|accumulator|borrowIndex|totalBorrows|"
+    r"totalReserves|cashPrior|getCash|cToken|hToken",
+    re.I,
+)
+_DONATION_BALANCE = re.compile(
+    r"balanceOf\s*\(\s*address\s*\(\s*this\s*\)\s*\)|getCashPrior\s*\(|getCash\s*\(",
+    re.I,
+)
+_SUPPLY_DIVISION = re.compile(r"/\s*(?:totalSupply|totalShares|_totalSupply|supply)\b", re.I)
+_DONATION_MITIGATION = re.compile(
+    r"internalCash|storedCash|cashBalance|virtualShares|deadShares|MINIMUM_LIQUIDITY|"
+    r"exchangeRateMantissa\s*=\s*initial|require\s*\([^;]*(totalSupply|supply)[^;]*>\s*0",
+    re.I,
+)
+
+
+class LendingExchangeRateDonationDetector(Detector):
+    name = "lending_exchange_rate_donation"
+
+    def run(self, ctx: TargetContext) -> list[FindingCandidate]:
+        out: list[FindingCandidate] = []
+        full = ctx.all_source_text()
+        if not _EXCHANGE_RATE_SURFACE.search(full):
+            return out
+        for path, src in ctx.source_files.items():
+            if not src:
+                continue
+            for fname, _params, _tail, body in iter_function_bodies(src):
+                if not _EXCHANGE_RATE_SURFACE.search(fname + " " + body):
+                    continue
+                if not (_DONATION_BALANCE.search(body) and _SUPPLY_DIVISION.search(body)):
+                    continue
+                if _DONATION_MITIGATION.search(body + " " + full):
+                    continue
+                out.append(_finding(
+                    self.name,
+                    "exchange_rate_from_donatable_cash",
+                    f"Lending exchange rate uses donatable cash divided by supply: {fname}",
+                    (
+                        f"`{fname}` derives an exchange rate/accumulator from live contract cash "
+                        "or token.balanceOf(address(this)) divided by total supply, without "
+                        "visible virtual/dead-share or internal-cash protection. Direct donations "
+                        "to an empty or thin market can inflate the rate and drain borrows/"
+                        "withdrawals (Hundred Finance / zkLend lending accumulator class)."
+                    ),
+                    8.5,
+                    6.0,
+                    "high",
+                    "lending_exchange_rate_donation",
+                    fname,
+                    lead_only=False,
+                    tests=[
+                        "Fork/unit PoC: leave the market thin, donate underlying directly, then mint/redeem/borrow against the inflated exchange rate.",
+                        "Confirm total cash is internally accounted or protected by virtual/dead shares and minimum liquidity.",
+                    ],
+                    extra={"file": path},
+                ))
+        return out
+
+
+# --------------------------------------------------------------------------- #
+# KyberSwap Elastic class: CLMM tick-boundary/rounding mismatch
+# --------------------------------------------------------------------------- #
+_CLMM_SURFACE = re.compile(r"sqrtP|sqrtPrice|tick|liquidity|swapStep|nextSqrt|deltaL|baseL", re.I)
+_CLMM_ROUNDING = re.compile(r"mulDiv|FullMath|roundingUp|ceil|delta|calcFinalPrice|computeSwapStep", re.I)
+_BOUNDARY_CROSS_GUARD = re.compile(
+    r"(nextSqrt\w*|sqrtP\w*)\s*(?:==|>=|<=)\s*(target|next|boundary|sqrtPrice)\w*|"
+    r"crossTick\s*\(|_cross\s*\(|recomputeLiquidity|require\s*\([^;]*(tick|sqrt)[^;]*(<=|>=)",
+    re.I,
+)
+
+
+class ClmmTickBoundaryRoundingDetector(Detector):
+    name = "clmm_tick_boundary_rounding"
+
+    def run(self, ctx: TargetContext) -> list[FindingCandidate]:
+        out: list[FindingCandidate] = []
+        for path, src in ctx.source_files.items():
+            if not src:
+                continue
+            for fname, _params, _tail, body in iter_function_bodies(src):
+                if not re.search(r"(swap|compute|calc|getNext|update|cross)", fname, re.I):
+                    continue
+                if not (_CLMM_SURFACE.search(body) and _CLMM_ROUNDING.search(body)):
+                    continue
+                if _BOUNDARY_CROSS_GUARD.search(body):
+                    continue
+                out.append(_finding(
+                    self.name,
+                    "clmm_boundary_rounding_without_cross_guard",
+                    f"CLMM swap math lacks explicit tick-boundary crossing guard: {fname}",
+                    (
+                        f"`{fname}` mixes sqrt-price/tick/liquidity rounding math but no explicit "
+                        "boundary equality/crossing guard is visible. Concentrated-liquidity AMMs "
+                        "can desynchronize liquidity and price at exact tick boundaries when "
+                        "rounding picks the wrong side (KyberSwap Elastic class)."
+                    ),
+                    8.5,
+                    4.5,
+                    "high",
+                    "clmm_tick_boundary",
+                    fname,
+                    tests=[
+                        "Unit/fuzz exact tick-boundary swaps: price equal to target tick, one wei below, and one wei above.",
+                        "Assert liquidity is crossed exactly once and invariant value cannot be inflated by repeated boundary swaps.",
+                    ],
+                    extra={"file": path},
+                ))
+        return out
+
+
+# --------------------------------------------------------------------------- #
+# Balancer/forks class: invariant precision loss and wrong rounding direction
+# --------------------------------------------------------------------------- #
+_INVARIANT_SURFACE = re.compile(r"invariant|amp|amplification|BPT|poolToken|scalingFactor|rateProvider|stable", re.I)
+_DIV_BEFORE_MUL = re.compile(r"\b\w+\s*/\s*\w+\s*\*\s*\w+|\(\s*[^()]{1,80}/[^()]{1,80}\)\s*\*", re.I)
+_PRECISION_SAFE = re.compile(r"mulDiv|divDown|divUp|mulDown|mulUp|FixedPoint|LogExpMath|rounding", re.I)
+
+
+class InvariantPrecisionLossDetector(Detector):
+    name = "invariant_precision_loss"
+
+    def run(self, ctx: TargetContext) -> list[FindingCandidate]:
+        out: list[FindingCandidate] = []
+        for path, src in ctx.source_files.items():
+            if not src:
+                continue
+            for fname, _params, _tail, body in iter_function_bodies(src):
+                if not _INVARIANT_SURFACE.search(fname + " " + body):
+                    continue
+                if not _DIV_BEFORE_MUL.search(body):
+                    continue
+                if _PRECISION_SAFE.search(body):
+                    continue
+                out.append(_finding(
+                    self.name,
+                    "invariant_division_before_multiplication",
+                    f"Invariant/pool-token math divides before multiplying: {fname}",
+                    (
+                        f"`{fname}` performs invariant/rate/BPT math with division before later "
+                        "multiplication and no fixed-point rounding helper. Stable-pool invariant "
+                        "math is sensitive to rounding direction; truncation can deflate pool-token "
+                        "price or misprice exits (Balancer V2/forks precision-loss class)."
+                    ),
+                    8.0,
+                    4.5,
+                    "high",
+                    "invariant_precision_loss",
+                    fname,
+                    tests=[
+                        "Fuzz small balances and highly imbalanced pools; compare against a high-precision reference implementation.",
+                        "Check every invariant step uses explicit up/down rounding appropriate to whether users mint or burn BPT.",
+                    ],
+                    extra={"file": path},
+                ))
+        return out
+
+
+# --------------------------------------------------------------------------- #
+# yETH class: unsafe unchecked mint/share math
+# --------------------------------------------------------------------------- #
+_MINT_FN = re.compile(r"(mint|deposit|issue|wrap|join)", re.I)
+_UNSAFE_MINT_MATH = re.compile(r"unchecked\s*\{[\s\S]{0,600}(?:\*|\+|/)|(?:\*|/)[^;]{0,160}_mint", re.I)
+_MINT_SINK = re.compile(r"_mint\s*\([^,]+,\s*([A-Za-z_]\w*)\s*\)", re.I)
+_MINT_MATH_GUARD = re.compile(r"mulDiv|SafeCast|Math\.|require\s*\([^;]*(shares|minted|amountOut)[^;]*(>|>=)|cap|maxSupply|minShares", re.I)
+
+
+class UnsafeMintMathDetector(Detector):
+    name = "unsafe_mint_math"
+
+    def run(self, ctx: TargetContext) -> list[FindingCandidate]:
+        out: list[FindingCandidate] = []
+        for path, src in ctx.source_files.items():
+            if not src:
+                continue
+            for fname, _params, tail, body in iter_function_bodies(src):
+                if not re.search(r"\b(public|external)\b", tail) or not _MINT_FN.search(fname):
+                    continue
+                mint = _MINT_SINK.search(body)
+                if not mint:
+                    continue
+                if not _UNSAFE_MINT_MATH.search(body):
+                    continue
+                if _MINT_MATH_GUARD.search(body):
+                    continue
+                out.append(_finding(
+                    self.name,
+                    "unchecked_mint_amount_math",
+                    f"Mint amount is derived through unsafe math without caps/slippage guards: {fname}",
+                    (
+                        f"`{fname}` mints `{mint.group(1)}` after unchecked or ad-hoc arithmetic "
+                        "without visible mulDiv/SafeCast/cap/min-share guards. A crafted amount, "
+                        "rate, or supply edge can over-mint shares/tokens (yETH unsafe-math class)."
+                    ),
+                    8.0,
+                    4.5,
+                    "high",
+                    "unsafe_mint_math",
+                    fname,
+                    tests=[
+                        "Fuzz amount/rate/supply near zero, max uint, and precision boundaries; assert minted value is monotonic and capped.",
+                        "Compare against a checked high-precision reference and require minSharesOut from the caller.",
+                    ],
+                    extra={"file": path, "minted_var": mint.group(1)},
+                ))
+        return out
+
+
+# --------------------------------------------------------------------------- #
+# Bunni class: withdraw rounding amplified by flash-cycle repetition
+# --------------------------------------------------------------------------- #
+_ROUND_UP_MATH = re.compile(
+    r"mulDivRoundingUp|ceilDiv|roundUp|\+\s*\w+\s*-\s*1\s*\)\s*/|/\s*\w+\s*\+\s*1",
+    re.I,
+)
+_WITHDRAW_TRANSFER = re.compile(r"safeTransfer|transfer\s*\(|sendValue|\.call\s*\{", re.I)
+
+
+class FlashCycleRoundingWithdrawDetector(Detector):
+    name = "flash_cycle_rounding_withdraw"
+
+    def run(self, ctx: TargetContext) -> list[FindingCandidate]:
+        out: list[FindingCandidate] = []
+        for path, src in ctx.source_files.items():
+            if not src:
+                continue
+            for fname, _params, _tail, body in iter_function_bodies(src):
+                if not re.search(r"(withdraw|redeem|burn|exit|remove)", fname, re.I):
+                    continue
+                if not (_ROUND_UP_MATH.search(body) and _WITHDRAW_TRANSFER.search(body)):
+                    continue
+                transfer = _WITHDRAW_TRANSFER.search(body)
+                debit = _BURN_OR_DEBIT.search(body)
+                debit_before_transfer = bool(debit and transfer and debit.start() < transfer.start())
+                if debit_before_transfer and re.search(r"dust|minOut|roundDown|mulDiv\(", body, re.I):
+                    continue
+                out.append(_finding(
+                    self.name,
+                    "withdraw_rounds_up_before_robust_debit",
+                    f"Withdraw path rounds user payout up and can be cycled: {fname}",
+                    (
+                        f"`{fname}` uses round-up/ceil math for a withdrawal payout and transfers "
+                        "before a clearly robust burn/debit/dust guard. Tiny rounding gains can be "
+                        "amplified by flash-loan deposit/withdraw loops until pool accounting is "
+                        "drained (Bunni withdraw-rounding class)."
+                    ),
+                    8.0,
+                    4.5,
+                    "high",
+                    "flash_cycle_rounding_withdraw",
+                    fname,
+                    tests=[
+                        "Fuzz repeated deposit->withdraw cycles with minimal shares and flash-loan-sized liquidity.",
+                        "Require rounding direction favors the pool on exits and burn/debit occurs before transfer.",
+                    ],
+                    extra={"file": path},
+                ))
+        return out
+
+
+# --------------------------------------------------------------------------- #
+# Bybit/Safe supply-chain class: multisig signed delegatecall payload
+# --------------------------------------------------------------------------- #
+_MULTISIG_SURFACE = re.compile(r"checkSignatures|threshold|owners|multisig|Safe|execTransaction|signature", re.I)
+_DELEGATECALL_USER_PAYLOAD = re.compile(r"delegatecall\s*\([^;]*(data|payload|calldata|operation|to|target)", re.I)
+_DELEGATECALL_BLOCK = re.compile(r"operation\s*!=\s*\w*DelegateCall|require\s*\([^;]*delegatecall[^;]*(false|disabled)|allowlist|moduleWhitelist", re.I)
+
+
+class MultisigDelegatecallPayloadDetector(Detector):
+    name = "multisig_delegatecall_payload"
+
+    def run(self, ctx: TargetContext) -> list[FindingCandidate]:
+        out: list[FindingCandidate] = []
+        full = ctx.all_source_text()
+        if not _MULTISIG_SURFACE.search(full):
+            return out
+        for path, src in ctx.source_files.items():
+            if not src:
+                continue
+            for fname, _params, _tail, body in iter_function_bodies(src):
+                if not _MULTISIG_SURFACE.search(fname + " " + body):
+                    continue
+                if not _DELEGATECALL_USER_PAYLOAD.search(body):
+                    continue
+                if _DELEGATECALL_BLOCK.search(body):
+                    continue
+                out.append(_finding(
+                    self.name,
+                    "multisig_signed_delegatecall_payload",
+                    f"Multisig can execute signed delegatecall payloads: {fname}",
+                    (
+                        f"`{fname}` verifies multisig-style signatures and can execute "
+                        "delegatecall with transaction calldata/target. This is intended in some "
+                        "Safe-like wallets, but it means a compromised signing UI or hidden payload "
+                        "can mutate wallet storage/implementation while signatures are valid "
+                        "(Bybit supply-chain delegatecall class)."
+                    ),
+                    9.0,
+                    3.5,
+                    "critical",
+                    "multisig_delegatecall_payload",
+                    fname,
+                    tests=[
+                        "Confirm whether delegatecall is required; if so, require offline calldata decoding and implementation-slot diff checks in signing flow.",
+                        "Simulate a delegatecall payload that writes critical wallet storage and confirm signers would see the true calldata.",
+                    ],
+                    extra={"file": path, "documented_centralization": True, "lead_only": True},
+                ))
+        return out
+
+
+# --------------------------------------------------------------------------- #
+# BitMart/Ronin/DMM/WazirX class: single-key custody sweep blast radius
+# --------------------------------------------------------------------------- #
+_CUSTODY_SWEEP_NAME = re.compile(r"(withdrawAll|sweep|rescue|emergencyWithdraw|drain|transferAll)", re.I)
+_ALL_FUNDS_TRANSFER = re.compile(
+    r"balanceOf\s*\(\s*address\s*\(\s*this\s*\)\s*\)|address\s*\(\s*this\s*\)\s*\.balance",
+    re.I,
+)
+_SINGLE_ADMIN = re.compile(r"onlyOwner|owner\s*\(\s*\)|msg\.sender\s*==\s*owner|DEFAULT_ADMIN_ROLE", re.I)
+_MULTISIG_TIMELOCK_HINT = re.compile(r"timelock|delay|multisig|threshold|guardian|pauseGuardian|Safe", re.I)
+
+
+class CustodySweepCentralizationDetector(Detector):
+    name = "custody_sweep_centralization"
+
+    def run(self, ctx: TargetContext) -> list[FindingCandidate]:
+        out: list[FindingCandidate] = []
+        for path, src in ctx.source_files.items():
+            if not src:
+                continue
+            for fname, _params, tail, body in iter_function_bodies(src):
+                if not _CUSTODY_SWEEP_NAME.search(fname):
+                    continue
+                if not (_SINGLE_ADMIN.search(tail + body) and _ALL_FUNDS_TRANSFER.search(body)):
+                    continue
+                if _MULTISIG_TIMELOCK_HINT.search(tail + body):
+                    continue
+                out.append(_finding(
+                    self.name,
+                    "single_admin_can_sweep_custody",
+                    f"Single admin path can sweep all custody funds: {fname}",
+                    (
+                        f"`{fname}` appears to let one owner/admin-controlled path transfer the "
+                        "contract's full token/native balance, with no visible timelock, threshold, "
+                        "or guardian delay. The Solidity may be intentional, but compromise of that "
+                        "key has exchange/hot-wallet blast radius (BitMart, Ronin, DMM, WazirX class)."
+                    ),
+                    7.0,
+                    3.0,
+                    "high",
+                    "custody_key_blast_radius",
+                    fname,
+                    tests=[
+                        "Read live owner/admin; verify it is a multisig or timelock and not an EOA/hot wallet.",
+                        "Confirm sweep paths are delayed, capped, pausable, and monitored with calldata transparency.",
+                    ],
+                    extra={"file": path, "documented_centralization": True, "lead_only": True},
                 ))
         return out

@@ -51,6 +51,12 @@ _STRUCTURAL_DETECTORS = frozenset({
     "payable_multicall_msgvalue_reuse", "signed_unsigned_cast_mismatch",
     "liquidation_collateral_not_cleared", "allowance_drain_router",
     "zero_value_transferfrom_bypass", "zero_transfer_reward_checkpoint",
+    "erc777_hook_balance_bypass", "bridge_keeper_mutation",
+    "bridge_zero_root_acceptance", "verifier_address_spoof",
+    "vyper_nonreentrant_compiler", "thin_liquidity_spot_oracle",
+    "lending_exchange_rate_donation", "clmm_tick_boundary_rounding",
+    "invariant_precision_loss", "unsafe_mint_math",
+    "flash_cycle_rounding_withdraw", "multisig_delegatecall_payload",
 })
 
 

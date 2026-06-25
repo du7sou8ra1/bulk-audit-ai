@@ -5,10 +5,24 @@ from backend.detectors.base import TargetContext
 from backend.detectors.ultra_deep_v2 import (
     AllowanceDrainRouterDetector,
     BridgeRetryDomainBindingDetector,
+    BridgeKeeperMutationDetector,
+    BridgeZeroRootAcceptanceDetector,
+    ClmmTickBoundaryRoundingDetector,
     ComponentShareAccountingDetector,
+    CustodySweepCentralizationDetector,
     DecimalUnitMismatchDetector,
+    Erc777HookBalanceBypassDetector,
+    FlashCycleRoundingWithdrawDetector,
+    InvariantPrecisionLossDetector,
+    LendingExchangeRateDonationDetector,
+    MultisigDelegatecallPayloadDetector,
+    ReadOnlyReserveReentrancyDetector,
     SettlementBoundaryMismatchDetector,
     SingleVerifierBridgeConfigDetector,
+    ThinLiquiditySpotOracleDetector,
+    UnsafeMintMathDetector,
+    VerifierAddressSpoofDetector,
+    VyperNonreentrantCompilerDetector,
     ZeroValueTransferFromBypassDetector,
     ZeroTransferRewardCheckpointDetector,
 )
@@ -297,3 +311,393 @@ def test_allowance_drain_router():
     d = AllowanceDrainRouterDetector()
     assert "router_unfiltered_target_and_calldata" in _rules(d, bad)
     assert "router_unfiltered_target_and_calldata" not in _rules(d, good)
+
+
+def test_erc777_hook_balance_bypass():
+    bad = """
+    interface IERC777 { function transferFrom(address from, address to, uint256 amount) external returns (bool); }
+    contract Market {
+      IERC777 imBTC;
+      mapping(address => uint256) balances;
+      function deposit(uint256 amount) external {
+        imBTC.transferFrom(msg.sender, address(this), amount);
+        balances[msg.sender] += amount;
+      }
+      function withdraw(uint256 amount) external {
+        require(balances[msg.sender] >= amount);
+        balances[msg.sender] -= amount;
+        imBTC.transferFrom(address(this), msg.sender, amount);
+      }
+    }
+    """
+    good = """
+    interface IERC777 { function transferFrom(address from, address to, uint256 amount) external returns (bool); }
+    contract Market {
+      IERC777 imBTC;
+      mapping(address => uint256) balances;
+      function deposit(uint256 amount) external nonReentrant {
+        balances[msg.sender] += amount;
+        imBTC.transferFrom(msg.sender, address(this), amount);
+      }
+    }
+    """
+    d = Erc777HookBalanceBypassDetector()
+    assert "erc777_transfer_hook_before_balance_update" in _rules(d, bad)
+    assert "erc777_transfer_hook_before_balance_update" not in _rules(d, good)
+
+
+def test_read_only_reserve_reentrancy():
+    bad = """
+    contract LendingOracle {
+      IPool pool;
+      function donateThenSync(address token, uint256 amount) external {
+        IERC20(token).transferFrom(msg.sender, address(pool), amount);
+        pool.sync();
+      }
+      function collateralValue(uint256 amount) external view returns (uint256) {
+        (uint112 r0, uint112 r1,) = pool.getReserves();
+        return amount * uint256(r0) / uint256(r1);
+      }
+    }
+    """
+    good = """
+    contract LendingOracle {
+      IPool pool;
+      uint256 lastPrice;
+      function collateralValue(uint256 amount) external view nonReentrantView returns (uint256) {
+        return amount * lastPrice / 1e18;
+      }
+    }
+    """
+    d = ReadOnlyReserveReentrancyDetector()
+    assert "live_reserve_read_without_read_lock" in _rules(d, bad)
+    assert "live_reserve_read_without_read_lock" not in _rules(d, good)
+
+
+def test_bridge_keeper_mutation():
+    bad = """
+    contract EthCrossChainManager {
+      bytes public curEpochConPubKeyBytes;
+      function putCurEpochConPubKeyBytes(bytes calldata keys) external { curEpochConPubKeyBytes = keys; }
+      function executeCrossChainTx(bytes calldata payload) external {
+        (address target, bytes memory data) = abi.decode(payload, (address, bytes));
+        (bool ok,) = target.call(data);
+        require(ok, "call");
+      }
+    }
+    """
+    good = """
+    contract EthCrossChainManager {
+      mapping(address => bool) trustedTargets;
+      mapping(bytes4 => bool) allowedSelector;
+      bytes public curEpochConPubKeyBytes;
+      function executeCrossChainTx(bytes calldata payload) external {
+        (address target, bytes memory data) = abi.decode(payload, (address, bytes));
+        require(trustedTargets[target], "target");
+        require(allowedSelector[bytes4(data)], "selector");
+        (bool ok,) = target.call(data);
+        require(ok, "call");
+      }
+    }
+    """
+    d = BridgeKeeperMutationDetector()
+    assert "bridge_payload_can_call_keeper_mutator" in _rules(d, bad)
+    assert "bridge_payload_can_call_keeper_mutator" not in _rules(d, good)
+
+
+def test_bridge_zero_root_acceptance():
+    bad = """
+    contract Replica {
+      mapping(bytes32 => uint256) public confirmAt;
+      function initialize(bytes32 _committedRoot) external {
+        confirmAt[_committedRoot] = 1;
+      }
+      function process(bytes32 root, bytes calldata message) external {
+        require(confirmAt[root] != 0, "root");
+        _execute(message);
+      }
+      function _execute(bytes calldata) internal {}
+    }
+    """
+    good = """
+    contract Replica {
+      mapping(bytes32 => uint256) public confirmAt;
+      function initialize(bytes32 _committedRoot) external {
+        require(_committedRoot != bytes32(0), "zero");
+        confirmAt[_committedRoot] = 1;
+      }
+      function process(bytes32 root, bytes calldata message) external {
+        require(root != bytes32(0), "zero");
+        require(confirmAt[root] != 0, "root");
+        _execute(message);
+      }
+      function _execute(bytes calldata) internal {}
+    }
+    """
+    d = BridgeZeroRootAcceptanceDetector()
+    assert "bridge_zero_or_unset_root_can_be_confirmed" in _rules(d, bad)
+    assert "bridge_zero_or_unset_root_can_be_confirmed" not in _rules(d, good)
+
+
+def test_verifier_address_spoof():
+    bad = """
+    contract Portal {
+      function verifyAndExecute(address wormholeVerifier, bytes calldata vaa) external {
+        (bool ok, bytes memory ret) = wormholeVerifier.staticcall(vaa);
+        require(ok && ret.length > 0, "verify");
+        _mint(msg.sender, 1 ether);
+      }
+      function _mint(address, uint256) internal {}
+    }
+    """
+    good = """
+    contract Portal {
+      address immutable WORMHOLE_CORE;
+      mapping(address => bool) trustedVerifier;
+      function verifyAndExecute(address wormholeVerifier, bytes calldata vaa) external {
+        require(trustedVerifier[wormholeVerifier], "verifier");
+        require(wormholeVerifier == WORMHOLE_CORE, "core");
+        (bool ok, bytes memory ret) = wormholeVerifier.staticcall(vaa);
+        require(ok && ret.length > 0, "verify");
+        _mint(msg.sender, 1 ether);
+      }
+      function _mint(address, uint256) internal {}
+    }
+    """
+    d = VerifierAddressSpoofDetector()
+    assert "caller_supplied_verifier_address" in _rules(d, bad)
+    assert "caller_supplied_verifier_address" not in _rules(d, good)
+
+
+def test_vyper_nonreentrant_compiler():
+    bad = """
+    # @version 0.2.15
+    @external
+    @nonreentrant('lock')
+    def remove_liquidity(amount: uint256):
+        pass
+    """
+    good = """
+    # @version 0.3.10
+    @external
+    @nonreentrant('lock')
+    def remove_liquidity(amount: uint256):
+        pass
+    """
+    d = VyperNonreentrantCompilerDetector()
+    assert "vyper_broken_nonreentrant_version" in _rules(d, bad)
+    assert "vyper_broken_nonreentrant_version" not in _rules(d, good)
+
+
+def test_thin_liquidity_spot_oracle():
+    bad = """
+    contract Lending {
+      IPair pair;
+      function collateralPrice(uint256 amount) external view returns (uint256) {
+        (uint112 r0, uint112 r1,) = pair.getReserves();
+        return amount * uint256(r1) / uint256(r0);
+      }
+    }
+    """
+    good = """
+    contract Lending {
+      IPair pair;
+      uint256 minLiquidity;
+      function collateralPrice(uint256 amount) external view returns (uint256) {
+        (uint112 r0, uint112 r1,) = pair.getReserves();
+        require(r0 > minLiquidity && r1 > minLiquidity, "thin");
+        return amount * uint256(r1) / uint256(r0);
+      }
+    }
+    """
+    d = ThinLiquiditySpotOracleDetector()
+    assert "thin_pool_spot_oracle_no_depth_or_twap" in _rules(d, bad)
+    assert "thin_pool_spot_oracle_no_depth_or_twap" not in _rules(d, good)
+
+
+def test_lending_exchange_rate_donation():
+    bad = """
+    contract HToken {
+      IERC20 underlying;
+      uint256 totalBorrows;
+      uint256 totalReserves;
+      uint256 totalSupply;
+      function exchangeRateStored() public view returns (uint256) {
+        uint256 cash = underlying.balanceOf(address(this));
+        return (cash + totalBorrows - totalReserves) / totalSupply;
+      }
+    }
+    """
+    good = """
+    contract HToken {
+      uint256 internalCash;
+      uint256 totalBorrows;
+      uint256 totalReserves;
+      uint256 totalSupply;
+      function exchangeRateStored() public view returns (uint256) {
+        require(totalSupply > 0, "supply");
+        return (internalCash + totalBorrows - totalReserves) / totalSupply;
+      }
+    }
+    """
+    d = LendingExchangeRateDonationDetector()
+    assert "exchange_rate_from_donatable_cash" in _rules(d, bad)
+    assert "exchange_rate_from_donatable_cash" not in _rules(d, good)
+
+
+def test_clmm_tick_boundary_rounding():
+    bad = """
+    contract ElasticPool {
+      function computeSwapStep(uint160 sqrtP, uint160 targetSqrtP, uint128 liquidity, int24 tick) external pure returns (uint160) {
+        uint256 delta = FullMath.mulDiv(uint256(liquidity), uint256(targetSqrtP - sqrtP), uint256(sqrtP));
+        return uint160(uint256(sqrtP) + delta);
+      }
+    }
+    """
+    good = """
+    contract ElasticPool {
+      function computeSwapStep(uint160 sqrtP, uint160 targetSqrtP, uint128 liquidity, int24 tick) external returns (uint160 nextSqrtP) {
+        uint256 delta = FullMath.mulDiv(uint256(liquidity), uint256(targetSqrtP - sqrtP), uint256(sqrtP));
+        nextSqrtP = uint160(uint256(sqrtP) + delta);
+        if (nextSqrtP >= targetSqrtP) { crossTick(tick); }
+      }
+      function crossTick(int24) internal {}
+    }
+    """
+    d = ClmmTickBoundaryRoundingDetector()
+    assert "clmm_boundary_rounding_without_cross_guard" in _rules(d, bad)
+    assert "clmm_boundary_rounding_without_cross_guard" not in _rules(d, good)
+
+
+def test_invariant_precision_loss():
+    bad = """
+    contract StablePool {
+      function calcInvariant(uint256 balance, uint256 supply, uint256 amp) external pure returns (uint256 invariant) {
+        uint256 rate = balance / supply * 1e18;
+        invariant = rate * amp;
+      }
+    }
+    """
+    good = """
+    contract StablePool {
+      function calcInvariant(uint256 balance, uint256 supply, uint256 amp) external pure returns (uint256 invariant) {
+        uint256 rate = Math.mulDiv(balance, 1e18, supply);
+        invariant = rate * amp;
+      }
+    }
+    """
+    d = InvariantPrecisionLossDetector()
+    assert "invariant_division_before_multiplication" in _rules(d, bad)
+    assert "invariant_division_before_multiplication" not in _rules(d, good)
+
+
+def test_unsafe_mint_math():
+    bad = """
+    contract YethLike {
+      function mint(uint256 amount, uint256 rate) external {
+        uint256 shares;
+        unchecked { shares = amount * rate / 1e18; }
+        _mint(msg.sender, shares);
+      }
+      function _mint(address, uint256) internal {}
+    }
+    """
+    good = """
+    contract YethLike {
+      function mint(uint256 amount, uint256 rate, uint256 minShares) external {
+        uint256 shares = Math.mulDiv(amount, rate, 1e18);
+        require(shares >= minShares, "min");
+        _mint(msg.sender, shares);
+      }
+      function _mint(address, uint256) internal {}
+    }
+    """
+    d = UnsafeMintMathDetector()
+    assert "unchecked_mint_amount_math" in _rules(d, bad)
+    assert "unchecked_mint_amount_math" not in _rules(d, good)
+
+
+def test_flash_cycle_rounding_withdraw():
+    bad = """
+    contract BunniLike {
+      mapping(address => uint256) shares;
+      uint256 totalSupply;
+      IERC20 token;
+      function withdraw(uint256 share) external {
+        uint256 assets = (share * token.balanceOf(address(this)) + totalSupply - 1) / totalSupply;
+        token.transfer(msg.sender, assets);
+        shares[msg.sender] -= share;
+      }
+    }
+    """
+    good = """
+    contract BunniLike {
+      mapping(address => uint256) shares;
+      uint256 totalSupply;
+      IERC20 token;
+      function withdraw(uint256 share, uint256 minOut) external {
+        shares[msg.sender] -= share;
+        uint256 assets = Math.mulDiv(share, token.balanceOf(address(this)), totalSupply);
+        require(assets >= minOut, "minOut");
+        token.transfer(msg.sender, assets);
+      }
+    }
+    """
+    d = FlashCycleRoundingWithdrawDetector()
+    assert "withdraw_rounds_up_before_robust_debit" in _rules(d, bad)
+    assert "withdraw_rounds_up_before_robust_debit" not in _rules(d, good)
+
+
+def test_multisig_delegatecall_payload():
+    bad = """
+    contract SafeLike {
+      mapping(address => bool) owners;
+      uint256 threshold;
+      function execTransaction(address to, bytes calldata data, uint8 operation, bytes calldata signatures) external {
+        checkSignatures(signatures, threshold);
+        if (operation == 1) {
+          (bool ok,) = to.delegatecall(data);
+          require(ok, "delegate");
+        }
+      }
+      function checkSignatures(bytes calldata, uint256) internal view {}
+    }
+    """
+    good = """
+    contract SafeLike {
+      mapping(address => bool) owners;
+      uint256 threshold;
+      function execTransaction(address to, bytes calldata data, uint8 operation, bytes calldata signatures) external {
+        checkSignatures(signatures, threshold);
+        require(operation != Operation.DelegateCall, "no delegatecall");
+        (bool ok,) = to.call(data);
+        require(ok, "call");
+      }
+      function checkSignatures(bytes calldata, uint256) internal view {}
+    }
+    """
+    d = MultisigDelegatecallPayloadDetector()
+    assert "multisig_signed_delegatecall_payload" in _rules(d, bad)
+    assert "multisig_signed_delegatecall_payload" not in _rules(d, good)
+
+
+def test_custody_sweep_centralization():
+    bad = """
+    contract HotWallet {
+      IERC20 token;
+      function sweep(address to) external onlyOwner {
+        token.transfer(to, token.balanceOf(address(this)));
+      }
+    }
+    """
+    good = """
+    contract HotWallet {
+      IERC20 token;
+      function sweep(address to) external onlyOwner timelock {
+        token.transfer(to, token.balanceOf(address(this)));
+      }
+    }
+    """
+    d = CustodySweepCentralizationDetector()
+    assert "single_admin_can_sweep_custody" in _rules(d, bad)
+    assert "single_admin_can_sweep_custody" not in _rules(d, good)
