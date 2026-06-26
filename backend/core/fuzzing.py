@@ -253,6 +253,7 @@ class GeneratedSuite:
     fuzz_tests: int
     skipped_functions: list[str] = field(default_factory=list)
     surfaces: list[str] = field(default_factory=list)
+    stateful_tests: int = 0
 
 
 def inspect_fuzz_readiness(source_dir: Path, source_files: dict[str, str]) -> dict:
@@ -463,7 +464,8 @@ def run_detector_invariant_generation(
     validation = _validate_generated_suite(generated.project_dir, out_dir / "validation", timeout=timeout)
     status = "failed" if validation.status == "failed" else "ok"
     summary = (
-        f"detector-focused invariants: {generated.fuzz_tests} probe(s) for "
+        f"detector-focused invariants: {generated.fuzz_tests} probe(s) + "
+        f"{generated.stateful_tests} stateful scenario(s) for "
         f"{len(selected)} high-signal finding(s); validation={validation.status}; "
         f"path={generated.project_dir}"
     )
@@ -484,6 +486,8 @@ def run_detector_invariant_generation(
             "generated_test": str(generated.test_path),
             "generated_plan": str(generated.plan_path),
             "generated_fuzz_tests": generated.fuzz_tests,
+            "generated_stateful_tests": generated.stateful_tests,
+            "elite_phase": 2,
             "selected_findings": [_candidate_summary(c) for c in selected],
             "templates": generated.surfaces,
             "validation": {
@@ -516,6 +520,7 @@ def generate_detector_invariant_suite(
     selected = _select_detector_invariant_candidates(candidates, max_findings=max_findings)
     abi_functions = _abi_functions(ctx.abi)
     generated: list[str] = []
+    stateful: list[str] = []
     rows: list[dict] = []
     template_keys: list[str] = []
     skipped: list[str] = []
@@ -524,12 +529,15 @@ def generate_detector_invariant_suite(
         template = _template_for_candidate(cand)
         fn = _find_detector_abi_function(cand, template, abi_functions)
         probe = _render_detector_probe(index, cand, template, fn)
+        stateful_probe = _render_detector_stateful_probe(index, cand, template, fn)
         generated.append(probe)
+        stateful.append(stateful_probe)
         template_keys.append(template.key)
         rows.append(
             {
                 "index": index,
                 "function_name": f"testFuzz_detector_{_safe_identifier(template.key)}_{index}",
+                "stateful_function_name": f"testFuzz_stateful_detector_{_safe_identifier(template.key)}_{index}",
                 "detector": cand.detector,
                 "rule_id": (cand.evidence or {}).get("rule_id") or "",
                 "title": cand.title,
@@ -544,7 +552,7 @@ def generate_detector_invariant_suite(
             skipped.append(f"{cand.detector}: raw calldata fallback")
 
     test_path = test_dir / "BulkAuditDetectorInvariants.t.sol"
-    test_path.write_text(_render_detector_invariant_test(ctx.address, generated), encoding="utf-8")
+    test_path.write_text(_render_detector_invariant_test(ctx.address, generated, stateful), encoding="utf-8")
     plan_path = project_dir / "DETECTOR_INVARIANTS.md"
     plan_path.write_text(_render_detector_invariant_plan(ctx, rows), encoding="utf-8")
     return GeneratedSuite(
@@ -554,6 +562,7 @@ def generate_detector_invariant_suite(
         fuzz_tests=len(generated),
         skipped_functions=skipped,
         surfaces=list(dict.fromkeys(template_keys)),
+        stateful_tests=len(stateful),
     )
 
 
@@ -709,6 +718,62 @@ def _render_detector_probe(
 """
 
 
+def _render_detector_stateful_probe(
+    index: int,
+    cand: FindingCandidate,
+    template: DetectorInvariantTemplate,
+    fn: dict | None,
+) -> str:
+    func_name = f"testFuzz_stateful_detector_{_safe_identifier(template.key)}_{index}"
+    detector = _sol_string(cand.detector or template.key)
+    prop = _sol_string(template.property_name)
+    goal = _sol_comment(template.goal)
+    rule_id = _sol_comment(str((cand.evidence or {}).get("rule_id") or ""))
+    title = _sol_comment(cand.title or "")
+    helper = _stateful_helper_for_strategy(template.strategy)
+
+    if fn is None:
+        return f"""
+    // Stateful detector scenario. Detector: {detector}; Rule: {rule_id}
+    // Finding: {title}
+    // Assertion goal: {goal}
+    function {func_name}(bytes calldata payload) public {{
+        {helper}("{detector}", "{prop}", payload);
+    }}
+"""
+
+    rendered = _render_detector_call(fn, template.strategy)
+    if rendered is None:
+        return f"""
+    // Stateful detector scenario. Detector: {detector}; Rule: {rule_id}
+    // Finding: {title}
+    // Assertion goal: {goal}
+    function {func_name}(bytes calldata payload) public {{
+        {helper}("{detector}", "{prop}", payload);
+    }}
+"""
+
+    params_blob, data_expr = rendered
+    return f"""
+    // Stateful detector scenario. Detector: {detector}; Rule: {rule_id}
+    // Finding: {title}
+    // Assertion goal: {goal}
+    function {func_name}({params_blob}) public {{
+        {helper}("{detector}", "{prop}", {data_expr});
+    }}
+"""
+
+
+def _stateful_helper_for_strategy(strategy: str) -> str:
+    if strategy == "zero_transfer":
+        return "_statefulRepeatNoProfit"
+    if strategy == "bridge_zero_root":
+        return "_statefulReplayNoProfit"
+    if strategy in {"auth_upgrade", "allowance_router"}:
+        return "_statefulUnauthorizedMustRevert"
+    return "_statefulSingleNoProfit"
+
+
 def _render_detector_call(fn: dict, strategy: str) -> tuple[str, str] | None:
     inputs = fn.get("inputs") or []
     params: list[str] = []
@@ -792,25 +857,41 @@ def _typed_zero_expr(abi_type: str) -> str:
     return "uint256(0)"
 
 
-def _render_detector_invariant_test(address: str, functions: list[str]) -> str:
+def _render_detector_invariant_test(address: str, functions: list[str], stateful_functions: list[str] | None = None) -> str:
     target_literal = _address_literal(address)
     body = "\n".join(functions) if functions else """
     function testFuzz_detector_raw(bytes calldata payload) public {
         _probe("generic", "raw calldata", payload);
     }
 """
+    stateful_body = "\n".join(stateful_functions or []) if stateful_functions else """
+    function testFuzz_stateful_detector_raw(bytes calldata payload) public {
+        _statefulSingleNoProfit("generic", "raw calldata", payload);
+    }
+"""
     return f"""// SPDX-License-Identifier: MIT
-// AUTO-GENERATED by BulkAuditAI Elite fuzzing phase 1.
-// Detector findings choose the focus. This scaffold records probe behavior; add
-// target-specific state snapshots to turn each probe into a proof-grade invariant.
+// AUTO-GENERATED by BulkAuditAI Elite fuzzing phase 2.
+// Detector findings choose the focus. Phase 2 adds attacker/honest actors,
+// repeated scenarios, replay probes, and first-pass safety assertions.
 pragma solidity ^0.8.23;
 
+interface Vm {{
+    function prank(address actor) external;
+    function assume(bool condition) external;
+}}
+
 contract BulkAuditDetectorInvariants {{
+    Vm internal constant vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
     address internal constant TARGET = {target_literal};
+    address internal constant ATTACKER = address(uint160(0xA11CE));
+    address internal constant HONEST_A = address(uint160(0xB0B));
+    address internal constant HONEST_B = address(uint160(0xCAFE));
     uint256 public detectorCalls;
     uint256 public detectorSuccesses;
+    uint256 public statefulScenarios;
 
     event DetectorProbe(string detector, string propertyName, bytes data, bool ok, bytes ret);
+    event StatefulProbe(address indexed actor, string detector, string propertyName, bool ok, bytes ret);
 
     receive() external payable {{}}
 
@@ -828,7 +909,78 @@ contract BulkAuditDetectorInvariants {{
         if (ok) detectorSuccesses++;
         emit DetectorProbe(detector, propertyName, data, ok, ret);
     }}
+
+    function _actorProbe(
+        address actor,
+        string memory detector,
+        string memory propertyName,
+        bytes memory data
+    ) internal returns (bool ok, bytes memory ret) {{
+        detectorCalls++;
+        vm.prank(actor);
+        (ok, ret) = TARGET.call(data);
+        if (ok) detectorSuccesses++;
+        emit DetectorProbe(detector, propertyName, data, ok, ret);
+        emit StatefulProbe(actor, detector, propertyName, ok, ret);
+    }}
+
+    function _assertNoEthProfit(uint256 beforeTarget, uint256 beforeActor, address actor) internal view {{
+        require(TARGET.balance >= beforeTarget, "target ETH decreased during detector scenario");
+        require(actor.balance <= beforeActor, "actor ETH increased during detector scenario");
+    }}
+
+    function _statefulSingleNoProfit(
+        string memory detector,
+        string memory propertyName,
+        bytes memory data
+    ) internal {{
+        statefulScenarios++;
+        uint256 beforeTarget = TARGET.balance;
+        uint256 beforeActor = ATTACKER.balance;
+        _actorProbe(ATTACKER, detector, propertyName, data);
+        _assertNoEthProfit(beforeTarget, beforeActor, ATTACKER);
+    }}
+
+    function _statefulRepeatNoProfit(
+        string memory detector,
+        string memory propertyName,
+        bytes memory data
+    ) internal {{
+        statefulScenarios++;
+        uint256 beforeTarget = TARGET.balance;
+        uint256 beforeActor = ATTACKER.balance;
+        _actorProbe(ATTACKER, detector, propertyName, data);
+        _actorProbe(ATTACKER, detector, propertyName, data);
+        _actorProbe(ATTACKER, detector, propertyName, data);
+        _assertNoEthProfit(beforeTarget, beforeActor, ATTACKER);
+    }}
+
+    function _statefulReplayNoProfit(
+        string memory detector,
+        string memory propertyName,
+        bytes memory data
+    ) internal {{
+        statefulScenarios++;
+        uint256 beforeTarget = TARGET.balance;
+        uint256 beforeActor = ATTACKER.balance;
+        (bool firstOk,) = _actorProbe(ATTACKER, detector, propertyName, data);
+        (bool secondOk,) = _actorProbe(ATTACKER, detector, propertyName, data);
+        require(!(firstOk && secondOk && TARGET.balance < beforeTarget), "replay path drained target ETH");
+        _assertNoEthProfit(beforeTarget, beforeActor, ATTACKER);
+    }}
+
+    function _statefulUnauthorizedMustRevert(
+        string memory detector,
+        string memory propertyName,
+        bytes memory data
+    ) internal {{
+        statefulScenarios++;
+        (bool ok,) = _actorProbe(ATTACKER, detector, propertyName, data);
+        require(!ok, "unauthorized actor reached sensitive path");
+    }}
 {body}
+
+{stateful_body}
 }}
 """
 
@@ -839,6 +991,7 @@ def _render_detector_invariant_plan(ctx: TargetContext, rows: list[dict]) -> str
             "\n".join(
                 [
                     f"### {row['function_name']}",
+                    f"- Stateful scenario: `{row['stateful_function_name']}`",
                     f"- Detector: `{row['detector']}`",
                     f"- Rule: `{row['rule_id'] or 'unknown'}`",
                     f"- Finding: {row['title']}",
@@ -861,8 +1014,9 @@ Chain: `{ctx.chain}`
 Contract: `{ctx.contract_name or 'unknown'}`
 
 This Foundry project is generated from detector findings after deduplication.
-It is intentionally conservative: probes are compiled and listed automatically,
-but the next Elite phase must add stateful handlers and concrete assertions.
+Elite phase 2 adds attacker/honest actor scaffolding and first-pass assertions
+for replay, unauthorized reachability, repeated zero-value transfer paths, and
+unexpected ETH profit. Token-specific balance assertions still need target wiring.
 
 ## Generated Probes
 
@@ -870,9 +1024,9 @@ but the next Elite phase must add stateful handlers and concrete assertions.
 
 ## Next Phase
 
-Elite phase 2 should convert each probe into a stateful handler with attacker
-and honest-user actors, fork or mock asset balances, and assertions that prove
-or refute the detector hypothesis automatically.
+Elite phase 3 should bind live token/vault/bridge balances into the generated
+stateful scenarios, so the harness can assert ERC20/ERC721/ERC1155 and share
+accounting deltas instead of only ETH/code/reachability properties.
 """
 
 
