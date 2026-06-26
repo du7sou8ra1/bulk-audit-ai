@@ -63,8 +63,24 @@ def build_coverage(
             "needs a ZK specialist. Only the on-chain settlement<->proof binding was assessed."
         )
 
+    bytecode_out = ctx.tool_outputs.get("bytecode-intel") or {}
+    bytecode_meta = bytecode_out.get("meta") or {}
+    bytecode_status = bytecode_out.get("status")
+    bytecode_risks = bytecode_meta.get("risk_signals") or []
+    bytecode_clusters = bytecode_meta.get("selector_clusters") or {}
+    if bytecode_status == "ok":
+        examined.append("bytecode_periphery")
+    elif not source_verified:
+        gaps.append("bytecode_periphery")
+
     if not source_verified:
-        out_of_tool_scope.append("contract source not verified — only bytecode/on-chain checks ran")
+        if bytecode_status == "ok":
+            out_of_tool_scope.append(
+                "contract source not verified; bytecode-intel ran, but full source-level "
+                "semantics and complete decompilation remain out of scope"
+            )
+        else:
+            out_of_tool_scope.append("contract source not verified — only limited on-chain checks ran")
 
     skipped_tools = [t for t, st in tool_statuses.items() if st in ("skipped", "failed", "timeout")]
 
@@ -76,6 +92,8 @@ def build_coverage(
         f"Detectors run: {', '.join(sorted(detectors_run_set)) or 'none'}. "
         f"{'Semantic invariant reasoning ran on '+str(len(reasoner_meta.get('functions_examined',[])))+' value-moving functions. ' if reasoner_ok else 'Semantic reasoning did NOT run (LLM off or no source). '}"
         f"State-changing external functions in scope: {n_ext}. "
+        f"{('Bytecode-intel saw selector clusters '+', '.join(sorted(bytecode_clusters))+'. ') if bytecode_clusters else ''}"
+        f"{('Bytecode risk signals: '+', '.join(r.get('rule_id','?') for r in bytecode_risks)+'. ') if bytecode_risks else ''}"
         f"{('NOT covered (no detector fired for): '+', '.join(gaps)+'. ') if gaps else ''}"
         f"{('Out of tool scope: '+'; '.join(out_of_tool_scope)+'. ') if out_of_tool_scope else ''}"
         f"{candidate_count} candidate(s) produced. "
@@ -91,6 +109,13 @@ def build_coverage(
         "semantic_reasoning_ran": reasoner_ok,
         "state_changing_externals": n_ext,
         "source_verified": source_verified,
+        "bytecode_intel": {
+            "status": bytecode_status,
+            "runtime_keccak": bytecode_meta.get("runtime_keccak"),
+            "code_size_bytes": bytecode_meta.get("code_size_bytes"),
+            "selector_clusters": bytecode_clusters,
+            "risk_signals": [r.get("rule_id") for r in bytecode_risks],
+        },
         "candidate_count": candidate_count,
         "honest_summary": honest,
     }

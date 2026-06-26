@@ -12,6 +12,7 @@ from backend.detectors.registry import (
     ULTRA_EXTRA_DETECTORS,
     get_detectors,
 )
+from backend.detectors.bytecode_periphery import BytecodePeripheryDetector
 from backend.schemas import SCAN_PROFILES, CreateScanRequest
 
 
@@ -38,6 +39,7 @@ def test_ultra_deep_v2_superset():
     v2 = {type(d) for d in get_detectors("ultra-deep-v2")}
     assert ultra <= v2
     assert {cls for cls in ULTRA_DEEP_V2_EXTRA_DETECTORS} <= v2
+    assert BytecodePeripheryDetector in v2
     assert len(get_detectors("ultra-deep")) == len(set(FULL_DETECTORS + ULTRA_EXTRA_DETECTORS))
 
 

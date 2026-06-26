@@ -30,6 +30,7 @@ def create_target_workspace(scan_id: int, address: str) -> dict[str, Path]:
         "slither": base / "tools" / "slither",
         "mythril": base / "tools" / "mythril",
         "semgrep": base / "tools" / "semgrep",
+        "bytecode": base / "tools" / "bytecode-intel",
         "foundry": base / "tools" / "foundry",
         "fuzz": base / "tools" / "fuzz",
         "evidence": base / "evidence",
@@ -83,7 +84,9 @@ def build_ai_packet(
         "slither": (ctx.tool_outputs.get("slither") or {}).get("findings", []),
         "mythril": (ctx.tool_outputs.get("mythril") or {}).get("findings", []),
         "semgrep": (ctx.tool_outputs.get("semgrep") or {}).get("findings", []),
+        "bytecode-intel": (ctx.tool_outputs.get("bytecode-intel") or {}).get("findings", []),
     }
+    bytecode_meta = (ctx.tool_outputs.get("bytecode-intel") or {}).get("meta", {})
 
     packet = {
         "target": {
@@ -96,6 +99,12 @@ def build_ai_packet(
             "admin": proxy.admin,
             "admin_owner": proxy.admin_owner,
             "owner": proxy.owner,
+            "bytecode": {
+                "runtime_keccak": bytecode_meta.get("runtime_keccak"),
+                "stripped_runtime_keccak": bytecode_meta.get("stripped_runtime_keccak"),
+                "code_size_bytes": bytecode_meta.get("code_size_bytes"),
+                "source_verified": bytecode_meta.get("source_verified"),
+            },
         },
         "candidate": {
             "detector": candidate.detector,
@@ -109,6 +118,7 @@ def build_ai_packet(
         },
         "evidence": candidate.evidence,
         "tool_summaries": tool_summaries,
+        "bytecode_intel": _trim(bytecode_meta, max_str=900, max_list=8),
         "onchain_checks": onchain_checks,
         "source_snippets": snippets,
         "next_tests_suggested": candidate.next_tests,

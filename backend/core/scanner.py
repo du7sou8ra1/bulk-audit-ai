@@ -36,6 +36,7 @@ from ..models import (
     utcnow,
 )
 from . import coverage as coverage_mod
+from . import bytecode_intel
 from . import dedup
 from . import evidence as evidence_mod
 from . import flashloan_sim
@@ -367,6 +368,40 @@ async def process_target(
         bytecode=bytecode,
         tool_outputs=tool_outputs,
     )
+
+    if _toggle(toggles, "bytecode_intel", s.enable_bytecode_intel):
+        tr = _create_toolrun(target_id, "bytecode-intel")
+        hub.publish(
+            scan_id,
+            {"type": "tool_update", "target_id": target_id, "tool": "bytecode-intel", "status": "running"},
+        )
+        try:
+            _log(scan_id, f"[{address}] bytecode-intel: selector/opcode/decompiler-lite pass")
+            bytecode_res = await asyncio.to_thread(
+                bytecode_intel.run_bytecode_intel,
+                bytecode=bytecode,
+                out_dir=workspace["bytecode"],
+                address=address,
+                chain=chain,
+                source_verified=bool(pkg.verified or (impl_pkg and impl_pkg.verified)),
+                proxy_info=proxy_info.to_dict(),
+            )
+        except Exception as exc:
+            logger.warning("bytecode-intel failed on %s: %s", address, exc)
+            bytecode_res = _skip_runner("bytecode-intel", f"runner crashed: {exc}")
+            bytecode_res.status = "failed"
+        tool_outputs["bytecode-intel"] = {
+            "summary": bytecode_res.summary,
+            "findings": bytecode_res.findings,
+            "status": bytecode_res.status,
+            "meta": bytecode_res.meta,
+        }
+        _finalize_toolrun(tr.id, bytecode_res)
+        hub.publish(
+            scan_id,
+            {"type": "tool_update", "target_id": target_id, "tool": "bytecode-intel",
+             "status": bytecode_res.status, "summary": bytecode_res.summary},
+        )
 
     if _toggle(toggles, "fuzzing", s.enable_fuzzing):
         tr = _create_toolrun(target_id, "fuzzing")

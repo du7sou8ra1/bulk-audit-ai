@@ -23,6 +23,7 @@ class ScanToggles(BaseModel):
     semgrep: bool | None = None
     foundry: bool | None = None
     fuzzing: bool | None = None
+    bytecode_intel: bool | None = None
     deepseek: bool | None = None
 
 

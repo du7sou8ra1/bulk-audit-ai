@@ -38,6 +38,16 @@ _TOOL_AGREEMENT_KEYWORDS = {
         "suicidal",
         "selfdestruct",
     ),
+    "bytecode_periphery": (
+        "bytecode",
+        "delegatecall",
+        "callcode",
+        "selfdestruct",
+        "tx.origin",
+        "approval",
+        "upgrade",
+        "executor",
+    ),
 }
 
 # Detectors that emit STRUCTURAL findings (a concrete code pattern, not a fuzzy
@@ -57,6 +67,7 @@ _STRUCTURAL_DETECTORS = frozenset({
     "lending_exchange_rate_donation", "clmm_tick_boundary_rounding",
     "invariant_precision_loss", "unsafe_mint_math",
     "flash_cycle_rounding_withdraw", "multisig_delegatecall_payload",
+    "bytecode_periphery",
 })
 
 
