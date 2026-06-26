@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -167,6 +168,54 @@ def _cli_export(scan_id: int, fmt: str, out: str | None) -> int:
     return 0
 
 
+def _cli_benchmark_exploits(
+    *,
+    scan_ids: list[int],
+    case_ids: list[str],
+    profile: str,
+    run: bool,
+    list_cases: bool,
+    out: str | None,
+) -> int:
+    from .core import exploit_benchmark
+
+    if list_cases:
+        print(json.dumps({"cases": exploit_benchmark.list_benchmark_cases()}, indent=2, sort_keys=True))
+        return 0
+
+    try:
+        cases = exploit_benchmark.select_benchmark_cases(case_ids)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    init_db()
+    ids = list(scan_ids)
+    if run:
+        print(f"running exploit benchmark over {len(cases)} case(s), profile={profile} ...")
+        ids += exploit_benchmark.run_benchmark_scans_sync(cases, profile=profile)
+    if not ids:
+        print("provide --scan-id or --run", file=sys.stderr)
+        return 2
+
+    with SessionLocal() as db:
+        report = exploit_benchmark.validate_benchmark_scans(db, ids, cases=cases, profile=profile)
+    if out:
+        exploit_benchmark.write_report(report, Path(out))
+        print(f"wrote {out}")
+
+    print(
+        f"benchmark {report.suite}: "
+        f"{report.passed_cases}/{report.total_cases} passed over scan(s) {', '.join(map(str, report.scan_ids))}"
+    )
+    for result in report.results:
+        status = "PASS" if result.passed else "FAIL"
+        print(f"- {status} {result.case_id}: detectors={', '.join(result.present_detectors) or 'none'}")
+        for error in result.errors:
+            print(f"  * {error}")
+    return 0 if report.passed else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="bulk-audit-ai")
     sub = parser.add_subparsers(dest="command")
@@ -188,6 +237,14 @@ def main(argv: list[str] | None = None) -> int:
     p_exp.add_argument("--format", default="json", choices=["json", "csv", "md", "markdown", "zip"])
     p_exp.add_argument("--out", default=None)
 
+    p_bench = sub.add_parser("benchmark-exploits", help="Elite Phase 5 exploit regression benchmark")
+    p_bench.add_argument("--scan-id", type=int, action="append", default=[], help="existing scan id to validate")
+    p_bench.add_argument("--case", action="append", default=[], help="benchmark case id; repeatable")
+    p_bench.add_argument("--profile", default="ultra-deep-v2")
+    p_bench.add_argument("--run", action="store_true", help="run benchmark scans before validating")
+    p_bench.add_argument("--list-cases", action="store_true", help="print benchmark case pack as JSON")
+    p_bench.add_argument("--out", default=None, help="write JSON benchmark report")
+
     sub.add_parser("serve", help="run the web server (default)")
 
     args = parser.parse_args(argv)
@@ -201,6 +258,15 @@ def main(argv: list[str] | None = None) -> int:
         return _cli_scan([args.address], "", args.profile, args.chain)
     if args.command == "export":
         return _cli_export(args.scan_id, args.format, args.out)
+    if args.command == "benchmark-exploits":
+        return _cli_benchmark_exploits(
+            scan_ids=args.scan_id,
+            case_ids=args.case,
+            profile=args.profile,
+            run=args.run,
+            list_cases=args.list_cases,
+            out=args.out,
+        )
 
     # default: serve
     import uvicorn
