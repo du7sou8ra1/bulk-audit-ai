@@ -16,7 +16,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..detectors.base import TargetContext
+from ..detectors.base import FindingCandidate, TargetContext
 from ..runners.base import RunnerResult
 from .command_runner import run_command, which
 
@@ -80,6 +80,161 @@ SURFACE_RULES: list[tuple[str, re.Pattern, list[str]]] = [
         ],
     ),
 ]
+
+
+@dataclass(frozen=True)
+class DetectorInvariantTemplate:
+    key: str
+    match_patterns: tuple[str, ...]
+    function_patterns: tuple[str, ...]
+    property_name: str
+    goal: str
+    next_assertion: str
+    strategy: str
+
+
+DETECTOR_INVARIANT_TEMPLATES: list[DetectorInvariantTemplate] = [
+    DetectorInvariantTemplate(
+        key="zero_transfer_reward_checkpoint",
+        match_patterns=(
+            "zero.transfer",
+            "zero.value",
+            "reward",
+            "checkpoint",
+            "royalt",
+        ),
+        function_patterns=("safeTransferFrom", "transferFrom", "transfer", "settle", "checkpoint", "record", "claim"),
+        property_name="zero-value transfer reward/checkpoint idempotence",
+        goal="Zero-value transfers and empty settlement updates must not append reward records or multiply claims.",
+        next_assertion="Snapshot reward-record count or claimable amount before/after repeated zero-value transfers, then require no positive delta.",
+        strategy="zero_transfer",
+    ),
+    DetectorInvariantTemplate(
+        key="donation_share_inflation",
+        match_patterns=(
+            "donation",
+            "share",
+            "vault",
+            "erc4626",
+            "exchange.rate",
+            "totalassets",
+            "reserve",
+            "inflation",
+        ),
+        function_patterns=("deposit", "mint", "withdraw", "redeem", "donate", "sync", "skim", "repay", "borrow"),
+        property_name="donation/share-price safety",
+        goal="Direct donations or reserve mutations must not let an attacker inflate share price and steal later deposits.",
+        next_assertion="Model attacker donation plus honest deposit/withdraw round trip, then require honest user assets are conserved within documented fees.",
+        strategy="donation_share",
+    ),
+    DetectorInvariantTemplate(
+        key="oracle_amm_rounding",
+        match_patterns=(
+            "oracle",
+            "price",
+            "twap",
+            "spot",
+            "amm",
+            "clmm",
+            "tick",
+            "rounding",
+            "precision",
+            "liquidity",
+        ),
+        function_patterns=("swap", "quote", "price", "slot0", "getReserves", "liquidate", "borrow", "withdraw"),
+        property_name="oracle/AMM bounded manipulation",
+        goal="One-block reserve skew, tick-boundary math, or precision loss must not create unbounded borrow, liquidation, or withdrawal profit.",
+        next_assertion="Add fork or mocked-pool reserves, compare pre/post quoted value, and require output stays inside a protocol-specific bound.",
+        strategy="oracle_rounding",
+    ),
+    DetectorInvariantTemplate(
+        key="bridge_proof_replay",
+        match_patterns=(
+            "bridge",
+            "proof",
+            "root",
+            "replay",
+            "verifier",
+            "domain",
+            "message",
+            "settlement",
+            "settlement.boundary",
+            "settlement_boundary",
+            "zk",
+            "retry",
+            "zero.root",
+        ),
+        function_patterns=("process", "relay", "execute", "prove", "verify", "finalize", "consume", "claim"),
+        property_name="bridge/proof domain and replay safety",
+        goal="Zero roots, untrusted verifiers, retry paths, or coordinate-domain mismatches must not authorize value movement twice.",
+        next_assertion="Call the same message/root/nonce twice and require the second call cannot increase minted/unlocked balance or consumed count.",
+        strategy="bridge_zero_root",
+    ),
+    DetectorInvariantTemplate(
+        key="callback_reentrancy",
+        match_patterns=(
+            "reentr",
+            "callback",
+            "hook",
+            "erc777",
+            "erc1155",
+            "receiver",
+            "onerc",
+            "read.only",
+        ),
+        function_patterns=("withdraw", "redeem", "claim", "safeTransfer", "transfer", "callback", "execute"),
+        property_name="callback/reentrancy accounting safety",
+        goal="Token hooks or read-only callbacks must not observe stale accounting or let balances be consumed twice.",
+        next_assertion="Replace this probe with an attacker receiver/handler and require owed balance decreases before any external callback.",
+        strategy="callback_reentrancy",
+    ),
+    DetectorInvariantTemplate(
+        key="allowance_router_drain",
+        match_patterns=(
+            "allowance",
+            "arbitrary.from",
+            "transferfrom",
+            "router",
+            "arbitrary.call",
+            "permit",
+            "approval",
+        ),
+        function_patterns=("transferFrom", "execute", "route", "swap", "approve", "permit", "multicall"),
+        property_name="allowance/router provenance safety",
+        goal="Caller-supplied from addresses, arbitrary calldata routers, and permit paths must stay bound to the authorized signer.",
+        next_assertion="Model victim approval plus attacker route and require victim balance cannot decrease unless msg.sender is authorized.",
+        strategy="allowance_router",
+    ),
+    DetectorInvariantTemplate(
+        key="auth_upgrade_provenance",
+        match_patterns=(
+            "initialize",
+            "initializer",
+            "uninitialized",
+            "owner",
+            "admin",
+            "delegatecall",
+            "implementation",
+            "upgrade",
+            "verifier.setter",
+        ),
+        function_patterns=("initialize", "init", "set", "upgrade", "delegate", "execute", "transferOwnership"),
+        property_name="auth/upgrade provenance safety",
+        goal="Initialization, upgrade, delegatecall, and verifier setter paths must not be reachable by an unprivileged caller.",
+        next_assertion="Add attacker-role calls for the selected entry point and require privileged state is unchanged after any unauthorized attempt.",
+        strategy="auth_upgrade",
+    ),
+]
+
+GENERIC_DETECTOR_TEMPLATE = DetectorInvariantTemplate(
+    key="generic_detector_probe",
+    match_patterns=(),
+    function_patterns=("withdraw", "claim", "deposit", "mint", "transfer", "execute", "process", "set"),
+    property_name="detector-guided state safety",
+    goal="The flagged state transition should preserve protocol value, authorization, replay, and lifecycle invariants.",
+    next_assertion="Replace the low-level probe with a target-specific assertion over the state variable named in the detector evidence.",
+    strategy="generic",
+)
 
 SUPPORTED_ABI_TYPES = {
     "address": "address",
@@ -272,6 +427,473 @@ def run_fuzzing(
     summary_path.write_text(json.dumps(result.meta, indent=2, sort_keys=True, default=str), encoding="utf-8")
     result.json_output_path = str(summary_path)
     return result
+
+
+def run_detector_invariant_generation(
+    ctx: TargetContext,
+    candidates: list[FindingCandidate],
+    out_dir: Path,
+    *,
+    timeout: int = 180,
+    max_findings: int = 8,
+) -> RunnerResult:
+    """Generate and validate detector-guided Foundry invariant probes.
+
+    This is Elite phase 1: detector findings choose the invariant focus, while
+    the generated Solidity remains a compiling scaffold until a later stateful
+    handler/assertion pass turns each probe into proof-grade fuzzing.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    selected = _select_detector_invariant_candidates(candidates, max_findings=max_findings)
+    summary_path = out_dir / "detector_invariant_summary.json"
+    if not selected:
+        meta = {
+            "target": ctx.address,
+            "chain": ctx.chain,
+            "selected_findings": [],
+            "reason": "no high-signal detector findings",
+        }
+        summary_path.write_text(json.dumps(meta, indent=2, sort_keys=True), encoding="utf-8")
+        res = RunnerResult.skipped("fuzz-invariants", "no high-signal detector findings to convert into invariants")
+        res.meta = meta
+        res.json_output_path = str(summary_path)
+        return res
+
+    generated = generate_detector_invariant_suite(ctx, selected, out_dir, max_findings=max_findings)
+    validation = _validate_generated_suite(generated.project_dir, out_dir / "validation", timeout=timeout)
+    status = "failed" if validation.status == "failed" else "ok"
+    summary = (
+        f"detector-focused invariants: {generated.fuzz_tests} probe(s) for "
+        f"{len(selected)} high-signal finding(s); validation={validation.status}; "
+        f"path={generated.project_dir}"
+    )
+    result = RunnerResult(
+        tool_name="fuzz-invariants",
+        status=status,
+        command=validation.command,
+        exit_code=validation.exit_code,
+        timed_out=validation.timed_out,
+        stdout_path=validation.stdout_path,
+        stderr_path=validation.stderr_path,
+        summary=summary,
+        findings=[],
+        meta={
+            "target": ctx.address,
+            "chain": ctx.chain,
+            "generated_project": str(generated.project_dir),
+            "generated_test": str(generated.test_path),
+            "generated_plan": str(generated.plan_path),
+            "generated_fuzz_tests": generated.fuzz_tests,
+            "selected_findings": [_candidate_summary(c) for c in selected],
+            "templates": generated.surfaces,
+            "validation": {
+                "status": validation.status,
+                "summary": validation.summary,
+                "command": validation.command,
+                "stdout_path": validation.stdout_path,
+                "stderr_path": validation.stderr_path,
+            },
+        },
+    )
+    summary_path.write_text(json.dumps(result.meta, indent=2, sort_keys=True, default=str), encoding="utf-8")
+    result.json_output_path = str(summary_path)
+    return result
+
+
+def generate_detector_invariant_suite(
+    ctx: TargetContext,
+    candidates: list[FindingCandidate],
+    out_dir: Path,
+    *,
+    max_findings: int = 8,
+) -> GeneratedSuite:
+    project_dir = out_dir
+    test_dir = project_dir / "test"
+    test_dir.mkdir(parents=True, exist_ok=True)
+    (project_dir / "src").mkdir(parents=True, exist_ok=True)
+    (project_dir / "foundry.toml").write_text(_foundry_toml(), encoding="utf-8")
+
+    selected = _select_detector_invariant_candidates(candidates, max_findings=max_findings)
+    abi_functions = _abi_functions(ctx.abi)
+    generated: list[str] = []
+    rows: list[dict] = []
+    template_keys: list[str] = []
+    skipped: list[str] = []
+
+    for index, cand in enumerate(selected):
+        template = _template_for_candidate(cand)
+        fn = _find_detector_abi_function(cand, template, abi_functions)
+        probe = _render_detector_probe(index, cand, template, fn)
+        generated.append(probe)
+        template_keys.append(template.key)
+        rows.append(
+            {
+                "index": index,
+                "function_name": f"testFuzz_detector_{_safe_identifier(template.key)}_{index}",
+                "detector": cand.detector,
+                "rule_id": (cand.evidence or {}).get("rule_id") or "",
+                "title": cand.title,
+                "template": template.key,
+                "property_name": template.property_name,
+                "goal": template.goal,
+                "next_assertion": template.next_assertion,
+                "abi_signature": _signature(fn) if fn else "raw calldata fallback",
+            }
+        )
+        if fn is None:
+            skipped.append(f"{cand.detector}: raw calldata fallback")
+
+    test_path = test_dir / "BulkAuditDetectorInvariants.t.sol"
+    test_path.write_text(_render_detector_invariant_test(ctx.address, generated), encoding="utf-8")
+    plan_path = project_dir / "DETECTOR_INVARIANTS.md"
+    plan_path.write_text(_render_detector_invariant_plan(ctx, rows), encoding="utf-8")
+    return GeneratedSuite(
+        project_dir=project_dir,
+        test_path=test_path,
+        plan_path=plan_path,
+        fuzz_tests=len(generated),
+        skipped_functions=skipped,
+        surfaces=list(dict.fromkeys(template_keys)),
+    )
+
+
+def _select_detector_invariant_candidates(
+    candidates: list[FindingCandidate],
+    *,
+    max_findings: int,
+) -> list[FindingCandidate]:
+    selected: list[FindingCandidate] = []
+    for cand in candidates:
+        evidence = cand.evidence or {}
+        if evidence.get("informational") or evidence.get("refuted"):
+            continue
+        severity = (cand.severity_candidate or "").lower()
+        evidence_text = json.dumps(evidence, default=str).lower()
+        high_signal = (
+            cand.impact_score >= 7
+            or severity in {"critical", "high"}
+            or "confirmable" in evidence_text
+            or evidence.get("poc_passed") is True
+            or evidence.get("manipulation_confirmed") is True
+        )
+        if high_signal:
+            selected.append(cand)
+    selected.sort(
+        key=lambda c: (
+            0 if (c.severity_candidate or "").lower() == "critical" else 1,
+            -float(c.impact_score or 0),
+            -float(c.confidence_score or 0),
+            c.detector,
+        )
+    )
+    return selected[:max_findings]
+
+
+def _candidate_summary(cand: FindingCandidate) -> dict:
+    evidence = cand.evidence or {}
+    return {
+        "detector": cand.detector,
+        "title": cand.title,
+        "severity": cand.severity_candidate,
+        "impact_score": cand.impact_score,
+        "confidence_score": cand.confidence_score,
+        "rule_id": evidence.get("rule_id") or "",
+        "affected_functions": cand.affected_functions or [],
+    }
+
+
+def _candidate_text(cand: FindingCandidate) -> str:
+    evidence = cand.evidence or {}
+    evidence_bits = " ".join(
+        str(evidence.get(k) or "")
+        for k in ("rule_id", "check", "pattern", "family", "root_cause", "incident")
+    )
+    return " ".join(
+        [
+            cand.detector or "",
+            cand.title or "",
+            cand.description or "",
+            evidence_bits,
+            " ".join(cand.affected_functions or []),
+        ]
+    ).lower()
+
+
+def _template_for_candidate(cand: FindingCandidate) -> DetectorInvariantTemplate:
+    text = _candidate_text(cand)
+    scored: list[tuple[int, DetectorInvariantTemplate]] = []
+    for template in DETECTOR_INVARIANT_TEMPLATES:
+        score = sum(1 for pat in template.match_patterns if re.search(pat, text, re.I))
+        if score:
+            scored.append((score, template))
+    if scored:
+        scored.sort(key=lambda item: item[0], reverse=True)
+        return scored[0][1]
+    return GENERIC_DETECTOR_TEMPLATE
+
+
+def _find_detector_abi_function(
+    cand: FindingCandidate,
+    template: DetectorInvariantTemplate,
+    abi_functions: list[dict],
+) -> dict | None:
+    supported = [fn for fn in abi_functions if _supports_focused_probe(fn)]
+    if not supported:
+        return None
+
+    affected_names = []
+    for item in cand.affected_functions or []:
+        name = re.sub(r"\(.*$", "", item or "").strip()
+        if name:
+            affected_names.append(name.lower())
+    for fn in supported:
+        if (fn.get("name") or "").lower() in affected_names:
+            return fn
+
+    for pattern in template.function_patterns:
+        for fn in supported:
+            if re.search(pattern, fn.get("name") or "", re.I):
+                return fn
+    return None
+
+
+def _supports_focused_probe(fn: dict) -> bool:
+    inputs = fn.get("inputs") or []
+    if len(inputs) > 6:
+        return False
+    return all(_sol_type(str(inp.get("type") or "")) is not None for inp in inputs if isinstance(inp, dict))
+
+
+def _render_detector_probe(
+    index: int,
+    cand: FindingCandidate,
+    template: DetectorInvariantTemplate,
+    fn: dict | None,
+) -> str:
+    func_name = f"testFuzz_detector_{_safe_identifier(template.key)}_{index}"
+    detector = _sol_string(cand.detector or template.key)
+    prop = _sol_string(template.property_name)
+    goal = _sol_comment(template.goal)
+    rule_id = _sol_comment(str((cand.evidence or {}).get("rule_id") or ""))
+    title = _sol_comment(cand.title or "")
+
+    if fn is None:
+        return f"""
+    // Detector: {detector}; Rule: {rule_id}
+    // Finding: {title}
+    // Property goal: {goal}
+    function {func_name}(bytes calldata payload) public {{
+        _probe("{detector}", "{prop}", payload);
+    }}
+"""
+
+    rendered = _render_detector_call(fn, template.strategy)
+    if rendered is None:
+        return f"""
+    // Detector: {detector}; Rule: {rule_id}
+    // Finding: {title}
+    // Property goal: {goal}
+    function {func_name}(bytes calldata payload) public {{
+        _probe("{detector}", "{prop}", payload);
+    }}
+"""
+
+    params_blob, data_expr = rendered
+    return f"""
+    // Detector: {detector}; Rule: {rule_id}
+    // Finding: {title}
+    // Property goal: {goal}
+    function {func_name}({params_blob}) public {{
+        _probe("{detector}", "{prop}", {data_expr});
+    }}
+"""
+
+
+def _render_detector_call(fn: dict, strategy: str) -> tuple[str, str] | None:
+    inputs = fn.get("inputs") or []
+    params: list[str] = []
+    args: list[str] = []
+    used_names: set[str] = set()
+    for i, inp in enumerate(inputs):
+        if not isinstance(inp, dict):
+            return None
+        abi_type = str(inp.get("type") or "")
+        sol_type = _sol_type(abi_type)
+        if sol_type is None:
+            return None
+        expr = _detector_arg_override(strategy, fn, inputs, i)
+        if expr is None:
+            param_name = _unique_param_name(inp.get("name") or f"arg{i}", i, used_names)
+            params.append(f"{sol_type} {param_name}")
+            args.append(param_name)
+        else:
+            args.append(expr)
+
+    sig = _signature(fn)
+    args_blob = (", " + ", ".join(args)) if args else ""
+    return ", ".join(params), f'abi.encodeWithSelector(bytes4(keccak256(bytes("{sig}"))){args_blob})'
+
+
+def _detector_arg_override(strategy: str, fn: dict, inputs: list[dict], index: int) -> str | None:
+    inp = inputs[index] if index < len(inputs) else {}
+    abi_type = str(inp.get("type") or "")
+    raw_name = str(inp.get("name") or "").lower()
+    fn_name = str(fn.get("name") or "").lower()
+
+    if strategy == "zero_transfer" and _is_zero_amount_input(fn_name, inputs, index):
+        return _typed_zero_expr(abi_type)
+    if strategy == "bridge_zero_root":
+        if abi_type == "bytes32" and re.search(r"root|hash|commit|message|id", raw_name):
+            return "bytes32(0)"
+        if abi_type == "address" and re.search(r"verifier|peer|endpoint|sender|receiver", raw_name):
+            return "address(0)"
+    if strategy == "auth_upgrade":
+        if abi_type == "address" and re.search(r"owner|admin|implementation|verifier|target", raw_name):
+            return "address(0)"
+    return None
+
+
+def _is_zero_amount_input(fn_name: str, inputs: list[dict], index: int) -> bool:
+    inp = inputs[index] if index < len(inputs) else {}
+    abi_type = str(inp.get("type") or "")
+    raw_name = str(inp.get("name") or "").lower()
+    if not re.fullmatch(r"u?int(8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?", abi_type):
+        return False
+    if re.search(r"amount|value|qty|quantity|shares?|assets?|balance|reward", raw_name):
+        return True
+    numeric_indexes = [
+        i for i, candidate in enumerate(inputs)
+        if isinstance(candidate, dict)
+        and re.fullmatch(
+            r"u?int(8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?",
+            str(candidate.get("type") or ""),
+        )
+    ]
+    if re.search(r"transfer|settle|claim|checkpoint|record", fn_name) and numeric_indexes:
+        return index == numeric_indexes[-1]
+    return False
+
+
+def _typed_zero_expr(abi_type: str) -> str:
+    if abi_type.startswith("uint"):
+        return "uint256(0)"
+    if abi_type.startswith("int"):
+        return "int256(0)"
+    if abi_type == "address":
+        return "address(0)"
+    if abi_type == "bool":
+        return "false"
+    if abi_type == "bytes":
+        return '""'
+    if abi_type == "string":
+        return '""'
+    if abi_type.startswith("bytes"):
+        return "bytes32(0)"
+    return "uint256(0)"
+
+
+def _render_detector_invariant_test(address: str, functions: list[str]) -> str:
+    target_literal = _address_literal(address)
+    body = "\n".join(functions) if functions else """
+    function testFuzz_detector_raw(bytes calldata payload) public {
+        _probe("generic", "raw calldata", payload);
+    }
+"""
+    return f"""// SPDX-License-Identifier: MIT
+// AUTO-GENERATED by BulkAuditAI Elite fuzzing phase 1.
+// Detector findings choose the focus. This scaffold records probe behavior; add
+// target-specific state snapshots to turn each probe into a proof-grade invariant.
+pragma solidity ^0.8.23;
+
+contract BulkAuditDetectorInvariants {{
+    address internal constant TARGET = {target_literal};
+    uint256 public detectorCalls;
+    uint256 public detectorSuccesses;
+
+    event DetectorProbe(string detector, string propertyName, bytes data, bool ok, bytes ret);
+
+    receive() external payable {{}}
+
+    function test_target_has_code() public view {{
+        require(TARGET.code.length > 0, "target has no code; run on a fork or replace TARGET");
+    }}
+
+    function invariant_target_code_persists() public view {{
+        require(TARGET.code.length > 0, "target code disappeared");
+    }}
+
+    function _probe(string memory detector, string memory propertyName, bytes memory data) internal {{
+        detectorCalls++;
+        (bool ok, bytes memory ret) = TARGET.call(data);
+        if (ok) detectorSuccesses++;
+        emit DetectorProbe(detector, propertyName, data, ok, ret);
+    }}
+{body}
+}}
+"""
+
+
+def _render_detector_invariant_plan(ctx: TargetContext, rows: list[dict]) -> str:
+    if rows:
+        row_text = "\n\n".join(
+            "\n".join(
+                [
+                    f"### {row['function_name']}",
+                    f"- Detector: `{row['detector']}`",
+                    f"- Rule: `{row['rule_id'] or 'unknown'}`",
+                    f"- Finding: {row['title']}",
+                    f"- Template: `{row['template']}`",
+                    f"- ABI probe: `{row['abi_signature']}`",
+                    f"- Property: {row['property_name']}",
+                    f"- Property goal: {row['goal']}",
+                    f"- Next manual assertion: {row['next_assertion']}",
+                ]
+            )
+            for row in rows
+        )
+    else:
+        row_text = "No high-signal detector findings were selected for invariant generation."
+
+    return f"""# BulkAuditAI Detector Invariants
+
+Target: `{ctx.address}`
+Chain: `{ctx.chain}`
+Contract: `{ctx.contract_name or 'unknown'}`
+
+This Foundry project is generated from detector findings after deduplication.
+It is intentionally conservative: probes are compiled and listed automatically,
+but the next Elite phase must add stateful handlers and concrete assertions.
+
+## Generated Probes
+
+{row_text}
+
+## Next Phase
+
+Elite phase 2 should convert each probe into a stateful handler with attacker
+and honest-user actors, fork or mock asset balances, and assertions that prove
+or refute the detector hypothesis automatically.
+"""
+
+
+def _unique_param_name(raw: str, index: int, used: set[str]) -> str:
+    name = _safe_param_name(raw, index)
+    base = name
+    suffix = 1
+    while name in used:
+        name = f"{base}_{suffix}"
+        suffix += 1
+    used.add(name)
+    return name
+
+
+def _sol_string(raw: str) -> str:
+    return (raw or "").replace("\\", "\\\\").replace('"', '\\"')[:96]
+
+
+def _sol_comment(raw: str) -> str:
+    text = re.sub(r"\s+", " ", raw or "").replace("*/", "* /").strip()
+    return text[:220]
 
 
 def _run_existing_foundry_fuzz(source_dir: Path, out_dir: Path, *, timeout: int) -> RunnerResult:
@@ -538,7 +1160,12 @@ contract BulkAuditGeneratedFuzz {{
 def _address_literal(address: str) -> str:
     addr = (address or "").strip()
     if re.fullmatch(r"0x[0-9a-fA-F]{40}", addr):
-        return f"address(uint160({addr}))"
+        try:
+            from eth_utils import to_checksum_address
+
+            return f"address({to_checksum_address(addr)})"
+        except Exception:
+            return f"address(uint160({int(addr, 16)}))"
     return "address(0)"
 
 

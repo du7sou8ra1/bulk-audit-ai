@@ -433,7 +433,7 @@ class ZeroTransferRewardCheckpointDetector(Detector):
                             "math may count the same rewards multiple times (Royal Royalties Polygon "
                             "class)."
                         ),
-                        8.5,
+                        9.0,
                         6.0,
                         "high",
                         "zero_transfer_reward_checkpoint",

@@ -24,7 +24,7 @@ from .base import (
 
 # Privileged verbs that should virtually always be access-controlled.
 _PRIV_RE = re.compile(
-    r"^(set|update|change|add|remove|grant|revoke|withdraw|sweep|rescue|pause|"
+    r"^(set(?!tle)|update|change|add|remove|grant|revoke|withdraw|sweep|rescue|pause|"
     r"unpause|mint|burn|upgrade|migrate|seize|skim|collect|configure|enable|"
     r"disable|whitelist|blacklist|setowner|transferownership|setadmin|setfee|"
     r"setoracle|setverifier|setimplementation|init)\w*",

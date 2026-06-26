@@ -1,16 +1,18 @@
 from pathlib import Path
 
 from backend.core.fuzzing import (
+    generate_detector_invariant_suite,
     generate_foundry_starter_suite,
     inspect_fuzz_readiness,
     infer_surfaces,
+    run_detector_invariant_generation,
 )
-from backend.detectors.base import TargetContext
+from backend.detectors.base import FindingCandidate, TargetContext
 
 
-def _ctx(abi=None, source="contract Vault {}") -> TargetContext:
+def _ctx(abi=None, source="contract Vault {}", address="0x1111111111111111111111111111111111111111") -> TargetContext:
     return TargetContext(
-        address="0x1111111111111111111111111111111111111111",
+        address=address,
         chain="ethereum",
         profile="ultra-deep-v2",
         onchain=None,
@@ -104,3 +106,127 @@ def test_generate_foundry_starter_suite_from_abi(tmp_path):
     assert "vault/share accounting" in plan_text
     assert "Generated ABI fuzz tests: 2" in plan_text
 
+
+def test_generate_detector_invariant_suite_from_high_signal_findings(tmp_path):
+    abi = [
+        {
+            "type": "function",
+            "name": "safeTransferFrom",
+            "stateMutability": "nonpayable",
+            "inputs": [
+                {"name": "from", "type": "address"},
+                {"name": "to", "type": "address"},
+                {"name": "id", "type": "uint256"},
+                {"name": "amount", "type": "uint256"},
+                {"name": "data", "type": "bytes"},
+            ],
+        },
+        {
+            "type": "function",
+            "name": "deposit",
+            "stateMutability": "nonpayable",
+            "inputs": [{"name": "assets", "type": "uint256"}],
+        },
+        {
+            "type": "function",
+            "name": "withdraw",
+            "stateMutability": "nonpayable",
+            "inputs": [{"name": "shares", "type": "uint256"}],
+        },
+    ]
+    ctx = _ctx(
+        abi=abi,
+        source="""
+        contract RoyaltiesVault {
+          function safeTransferFrom(address from, address to, uint256 id, uint256 amount, bytes calldata data) external {}
+          function deposit(uint256 assets) external {}
+          function withdraw(uint256 shares) external {}
+        }
+        """,
+    )
+    findings = [
+        FindingCandidate(
+            detector="zero_transfer_reward_checkpoint",
+            title="Zero-value transfers stack reward records",
+            description="Repeated zero-value transfers append settlement checkpoints and multiply claims.",
+            impact_score=8.8,
+            confidence_score=7.0,
+            severity_candidate="high",
+            evidence={"rule_id": "zero_transfer_stacks_reward_records"},
+            affected_functions=["safeTransferFrom"],
+        ),
+        FindingCandidate(
+            detector="lending_exchange_rate_donation",
+            title="Direct donation inflates share price",
+            description="Reserve donation can distort exchange rate before victim deposit.",
+            impact_score=8.4,
+            confidence_score=6.4,
+            severity_candidate="high",
+            evidence={"rule_id": "share_price_donation_inflation"},
+            affected_functions=["deposit"],
+        ),
+    ]
+
+    suite = generate_detector_invariant_suite(ctx, findings, tmp_path / "detector")
+    test_text = suite.test_path.read_text(encoding="utf-8")
+    plan_text = suite.plan_path.read_text(encoding="utf-8")
+
+    assert suite.fuzz_tests == 2
+    assert "BulkAuditDetectorInvariants" in test_text
+    assert "testFuzz_detector_zero_transfer_reward_checkpoint_0" in test_text
+    assert "safeTransferFrom(address,address,uint256,uint256,bytes)" in test_text
+    assert "uint256(0)" in test_text
+    assert "testFuzz_detector_donation_share_inflation_1" in test_text
+    assert "DetectorProbe" in test_text
+    assert "Zero-value transfers and empty settlement updates" in plan_text
+    assert "honest user assets are conserved" in plan_text
+
+
+def test_detector_invariant_generation_skips_low_signal_findings(tmp_path):
+    ctx = _ctx()
+    low = FindingCandidate(
+        detector="style_note",
+        title="Informational note",
+        description="No exploit path.",
+        impact_score=2.0,
+        confidence_score=5.0,
+        severity_candidate="info",
+        evidence={"informational": True},
+    )
+
+    res = run_detector_invariant_generation(ctx, [low], tmp_path / "detector")
+
+    assert res.status == "skipped"
+    assert "no high-signal" in res.summary
+    assert res.json_output_path
+
+
+def test_detector_invariant_suite_checksums_addresses_and_maps_zk_to_bridge(tmp_path):
+    ctx = _ctx(
+        abi=[],
+        address="0xff1f2b4adb9df6fc8eafecdcbf96a2b351680455",
+        source="contract RollupProcessor { function processDepositsAndWithdrawals(uint256 n) external {} }",
+    )
+    finding = FindingCandidate(
+        detector="zk_verifier",
+        title="Settlement bounded by a caller-supplied count not bound to the proof",
+        description="ZK settlement boundary mismatch where proof commits to a larger range than the L1 loop processes.",
+        impact_score=9.0,
+        confidence_score=6.0,
+        severity_candidate="critical",
+        evidence={
+            "rule_id": "settlement_count_not_bound_to_proof",
+            "bug_class": "settlement_boundary_mismatch",
+            "onchain_detectable": "lead_only",
+        },
+        affected_functions=["processDepositsAndWithdrawals"],
+    )
+
+    suite = generate_detector_invariant_suite(ctx, [finding], tmp_path / "zk")
+    test_text = suite.test_path.read_text(encoding="utf-8")
+    plan_text = suite.plan_path.read_text(encoding="utf-8")
+
+    assert "address(0xFF1F2B4ADb9dF6FC8eAFecDcbF96A2B351680455)" in test_text
+    assert "testFuzz_detector_bridge_proof_replay_0" in test_text
+    assert "bytes calldata payload" in test_text
+    assert "bridge/proof domain and replay safety" in plan_text

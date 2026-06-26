@@ -444,6 +444,38 @@ async def process_target(
     if len(candidates) < before_dedup:
         _log(scan_id, f"[{address}] dedup: {before_dedup} -> {len(candidates)} findings")
 
+    if _toggle(toggles, "fuzzing", s.enable_fuzzing):
+        tr = _create_toolrun(target_id, "fuzz-invariants")
+        hub.publish(
+            scan_id,
+            {"type": "tool_update", "target_id": target_id, "tool": "fuzz-invariants", "status": "running"},
+        )
+        try:
+            _log(scan_id, f"[{address}] fuzzing: detector-focused invariant generation")
+            invariant_res = await asyncio.to_thread(
+                fuzzing.run_detector_invariant_generation,
+                ctx,
+                candidates,
+                workspace["fuzz"] / "detector_invariants",
+                timeout=s.fuzz_timeout,
+            )
+        except Exception as exc:
+            logger.warning("detector invariant generation failed on %s: %s", address, exc)
+            invariant_res = _skip_runner("fuzz-invariants", f"runner crashed: {exc}")
+            invariant_res.status = "failed"
+        tool_outputs["fuzz-invariants"] = {
+            "summary": invariant_res.summary,
+            "findings": invariant_res.findings,
+            "status": invariant_res.status,
+            "meta": invariant_res.meta,
+        }
+        _finalize_toolrun(tr.id, invariant_res)
+        hub.publish(
+            scan_id,
+            {"type": "tool_update", "target_id": target_id, "tool": "fuzz-invariants",
+             "status": invariant_res.status, "summary": invariant_res.summary},
+        )
+
     # --- Score + (optional) refute + fork PoC + AI review + persist ------- #
     _set_target_status(scan_id, target_id, TargetStatus.AI)
     deepseek_on = _toggle(toggles, "deepseek", s.enable_deepseek)

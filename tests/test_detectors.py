@@ -9,6 +9,7 @@ from backend.core.onchain import OnchainClient
 from backend.core.proxy_resolver import ProxyInfo
 from backend.detectors.arbitrary_call import ArbitraryCallDetector
 from backend.detectors.base import TargetContext
+from backend.detectors.access_control import AccessControlDetector
 from backend.detectors.proxy_upgrade import ProxyUpgradeDetector
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -25,6 +26,19 @@ def _ctx(filename: str) -> TargetContext:
         workspace=FIXTURES,
         contract_name=filename.replace(".sol", ""),
         source_files={filename: src},
+    )
+
+
+def _ctx_source(source: str, profile: str = "ultra-deep-v2") -> TargetContext:
+    return TargetContext(
+        address="0x0000000000000000000000000000000000000001",
+        chain="ethereum",
+        profile=profile,
+        onchain=OnchainClient(rpc_url=""),
+        proxy_info=ProxyInfo(),
+        workspace=FIXTURES,
+        contract_name="Inline",
+        source_files={"Inline.sol": source},
     )
 
 
@@ -53,3 +67,21 @@ def test_safe_upgrade_not_critical():
         if "upgradeTo" in (f.affected_functions or []):
             assert "unprotected" not in f.title.lower()
             assert f.confidence_score <= 3
+
+
+def test_access_control_does_not_treat_settle_as_setter():
+    src = """
+    contract Rewards {
+      mapping(address => uint256) public settled;
+      function settleExpiredRoyalties(address[] calldata accounts) external returns (uint256[] memory out) {
+        out = new uint256[](accounts.length);
+        for (uint256 i; i < accounts.length; ++i) {
+          uint256 old = settled[accounts[i]];
+          settled[accounts[i]] = old + 1;
+          out[i] = 1;
+        }
+      }
+    }
+    """
+    findings = AccessControlDetector().run(_ctx_source(src))
+    assert not [f for f in findings if f.affected_functions == ["settleExpiredRoyalties"]]

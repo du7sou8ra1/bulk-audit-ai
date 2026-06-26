@@ -103,6 +103,9 @@ ACCESS_CONTROL_MARKERS = (
     "authorized",
     "restricted",
     "onlyEntryPoint",
+    "ifAdmin",
+    "onlyProxy",
+    "notDelegated",
 )
 
 _FUNC_RE = re.compile(

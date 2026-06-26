@@ -42,6 +42,8 @@ class DelegatecallDetector(Detector):
                 continue
             s = strip_comments(source)
             for name, params, tail, body in iter_function_bodies(s):
+                if re.search(r"\b(internal|private)\b", tail):
+                    continue
                 if re.search(r"\b(view|pure)\b", tail):
                     continue
                 m = _HL_DELEGATECALL.search(body)
