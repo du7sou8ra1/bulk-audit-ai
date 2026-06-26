@@ -254,6 +254,20 @@ class GeneratedSuite:
     skipped_functions: list[str] = field(default_factory=list)
     surfaces: list[str] = field(default_factory=list)
     stateful_tests: int = 0
+    asset_probes: int = 0
+    accounting_probes: int = 0
+
+
+@dataclass(frozen=True)
+class AssetProbe:
+    name: str
+    signature: str
+
+
+@dataclass(frozen=True)
+class AccountingProbe:
+    name: str
+    signature: str
 
 
 def inspect_fuzz_readiness(source_dir: Path, source_files: dict[str, str]) -> dict:
@@ -465,7 +479,9 @@ def run_detector_invariant_generation(
     status = "failed" if validation.status == "failed" else "ok"
     summary = (
         f"detector-focused invariants: {generated.fuzz_tests} probe(s) + "
-        f"{generated.stateful_tests} stateful scenario(s) for "
+        f"{generated.stateful_tests} stateful scenario(s) + "
+        f"{generated.asset_probes} asset probe(s) + "
+        f"{generated.accounting_probes} accounting probe(s) for "
         f"{len(selected)} high-signal finding(s); validation={validation.status}; "
         f"path={generated.project_dir}"
     )
@@ -487,7 +503,9 @@ def run_detector_invariant_generation(
             "generated_plan": str(generated.plan_path),
             "generated_fuzz_tests": generated.fuzz_tests,
             "generated_stateful_tests": generated.stateful_tests,
-            "elite_phase": 2,
+            "generated_asset_probes": generated.asset_probes,
+            "generated_accounting_probes": generated.accounting_probes,
+            "elite_phase": 4,
             "selected_findings": [_candidate_summary(c) for c in selected],
             "templates": generated.surfaces,
             "validation": {
@@ -519,6 +537,8 @@ def generate_detector_invariant_suite(
 
     selected = _select_detector_invariant_candidates(candidates, max_findings=max_findings)
     abi_functions = _abi_functions(ctx.abi)
+    asset_probes = _infer_asset_probes(ctx)
+    accounting_probes = _infer_accounting_probes(ctx)
     generated: list[str] = []
     stateful: list[str] = []
     rows: list[dict] = []
@@ -546,15 +566,20 @@ def generate_detector_invariant_suite(
                 "goal": template.goal,
                 "next_assertion": template.next_assertion,
                 "abi_signature": _signature(fn) if fn else "raw calldata fallback",
+                "asset_probes": ", ".join(p.name for p in asset_probes) or "none",
+                "accounting_probes": ", ".join(p.name for p in accounting_probes) or "none",
             }
         )
         if fn is None:
             skipped.append(f"{cand.detector}: raw calldata fallback")
 
     test_path = test_dir / "BulkAuditDetectorInvariants.t.sol"
-    test_path.write_text(_render_detector_invariant_test(ctx.address, generated, stateful), encoding="utf-8")
+    test_path.write_text(
+        _render_detector_invariant_test(ctx.address, generated, stateful, asset_probes, accounting_probes),
+        encoding="utf-8",
+    )
     plan_path = project_dir / "DETECTOR_INVARIANTS.md"
-    plan_path.write_text(_render_detector_invariant_plan(ctx, rows), encoding="utf-8")
+    plan_path.write_text(_render_detector_invariant_plan(ctx, rows, asset_probes, accounting_probes), encoding="utf-8")
     return GeneratedSuite(
         project_dir=project_dir,
         test_path=test_path,
@@ -563,6 +588,8 @@ def generate_detector_invariant_suite(
         skipped_functions=skipped,
         surfaces=list(dict.fromkeys(template_keys)),
         stateful_tests=len(stateful),
+        asset_probes=len(asset_probes),
+        accounting_probes=len(accounting_probes),
     )
 
 
@@ -626,6 +653,149 @@ def _candidate_text(cand: FindingCandidate) -> str:
             " ".join(cand.affected_functions or []),
         ]
     ).lower()
+
+
+ASSET_GETTER_PRIORITY = (
+    "asset",
+    "underlying",
+    "token",
+    "want",
+    "stakingToken",
+    "stakedToken",
+    "rewardToken",
+    "rewardsToken",
+    "token0",
+    "token1",
+    "collateralToken",
+    "debtToken",
+    "borrowToken",
+    "baseToken",
+    "quoteToken",
+    "lpToken",
+    "shareToken",
+    "vaultToken",
+    "pair",
+)
+
+ACCOUNTING_GETTER_PRIORITY = (
+    "totalAssets",
+    "totalSupply",
+    "totalDebt",
+    "totalBorrows",
+    "totalBorrow",
+    "totalReserves",
+    "totalDeposits",
+    "totalShares",
+    "totalCollateral",
+    "totalStaked",
+    "totalRewards",
+    "totalClaimed",
+    "exchangeRate",
+    "getExchangeRate",
+    "pricePerShare",
+    "convertToAssets",
+    "convertToShares",
+    "getReserves",
+    "reserve0",
+    "reserve1",
+)
+
+
+def _infer_asset_probes(ctx: TargetContext, *, max_probes: int = 8) -> list[AssetProbe]:
+    """Infer token-like address getters that can be snapshotted in Foundry."""
+    probes: list[AssetProbe] = []
+    seen: set[str] = set()
+
+    def add(name: str) -> None:
+        clean = _safe_identifier(name)
+        if not clean or clean in seen or not _looks_like_asset_getter(clean):
+            return
+        seen.add(clean)
+        probes.append(AssetProbe(name=clean, signature=f"{clean}()"))
+
+    for item in ctx.abi if isinstance(ctx.abi, list) else []:
+        if not isinstance(item, dict) or item.get("type") != "function":
+            continue
+        name = str(item.get("name") or "")
+        inputs = item.get("inputs") or []
+        outputs = item.get("outputs") or []
+        state = str(item.get("stateMutability") or "")
+        if inputs or state not in {"view", "pure"}:
+            continue
+        if any(isinstance(out, dict) and str(out.get("type") or "") == "address" for out in outputs):
+            add(name)
+
+    source_text = ctx.all_source_text()
+    for name in ASSET_GETTER_PRIORITY:
+        if len(probes) >= max_probes:
+            break
+        if name in seen:
+            continue
+        function_pat = rf"\bfunction\s+{re.escape(name)}\s*\(\s*\)[^{{;]*\breturns\s*\([^)]*\baddress\b"
+        public_var_pat = rf"\bpublic\b[^;\n]*\b{re.escape(name)}\b\s*(?:[;=,])"
+        if re.search(function_pat, source_text, re.I) or re.search(public_var_pat, source_text, re.I):
+            add(name)
+
+    probes.sort(key=lambda p: ASSET_GETTER_PRIORITY.index(p.name) if p.name in ASSET_GETTER_PRIORITY else 999)
+    return probes[:max_probes]
+
+
+def _infer_accounting_probes(ctx: TargetContext, *, max_probes: int = 10) -> list[AccountingProbe]:
+    probes: list[AccountingProbe] = []
+    seen: set[str] = set()
+
+    def add(name: str) -> None:
+        clean = _safe_identifier(name)
+        if not clean or clean in seen or not _looks_like_accounting_getter(clean):
+            return
+        seen.add(clean)
+        probes.append(AccountingProbe(name=clean, signature=f"{clean}()"))
+
+    for item in ctx.abi if isinstance(ctx.abi, list) else []:
+        if not isinstance(item, dict) or item.get("type") != "function":
+            continue
+        name = str(item.get("name") or "")
+        inputs = item.get("inputs") or []
+        outputs = item.get("outputs") or []
+        state = str(item.get("stateMutability") or "")
+        if inputs or state not in {"view", "pure"}:
+            continue
+        if any(
+            isinstance(out, dict)
+            and re.fullmatch(r"u?int(8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?", str(out.get("type") or ""))
+            for out in outputs
+        ):
+            add(name)
+
+    source_text = ctx.all_source_text()
+    for name in ACCOUNTING_GETTER_PRIORITY:
+        if len(probes) >= max_probes:
+            break
+        if name in seen:
+            continue
+        function_pat = rf"\bfunction\s+{re.escape(name)}\s*\(\s*\)[^{{;]*\breturns\s*\([^)]*\bu?int"
+        public_var_pat = rf"\bpublic\b[^;\n]*\b{re.escape(name)}\b\s*(?:[;=,])"
+        if re.search(function_pat, source_text, re.I) or re.search(public_var_pat, source_text, re.I):
+            add(name)
+
+    probes.sort(key=lambda p: ACCOUNTING_GETTER_PRIORITY.index(p.name) if p.name in ACCOUNTING_GETTER_PRIORITY else 999)
+    return probes[:max_probes]
+
+
+def _looks_like_asset_getter(name: str) -> bool:
+    lower = name.lower()
+    if lower in {n.lower() for n in ASSET_GETTER_PRIORITY}:
+        return True
+    if lower in {"tokenuri", "name", "symbol", "owner", "admin", "router", "oracle", "verifier"}:
+        return False
+    return bool(re.search(r"(asset|underlying|token|collateral|reward|share|vault|pair|lp)", lower))
+
+
+def _looks_like_accounting_getter(name: str) -> bool:
+    lower = name.lower()
+    if lower in {n.lower() for n in ACCOUNTING_GETTER_PRIORITY}:
+        return True
+    return bool(re.search(r"(total|reserve|assets|shares|supply|debt|borrow|collateral|reward|claimed|rate|price)", lower))
 
 
 def _template_for_candidate(cand: FindingCandidate) -> DetectorInvariantTemplate:
@@ -857,8 +1027,58 @@ def _typed_zero_expr(abi_type: str) -> str:
     return "uint256(0)"
 
 
-def _render_detector_invariant_test(address: str, functions: list[str], stateful_functions: list[str] | None = None) -> str:
+def _render_asset_getter_selector(probes: list[AssetProbe]) -> str:
+    if not probes:
+        return "        // No token-like getters inferred from ABI/source."
+    return "\n".join(
+        f'        if (index == {i}) return bytes4(keccak256(bytes("{probe.signature}")));'
+        for i, probe in enumerate(probes)
+    )
+
+
+def _render_asset_getter_name(probes: list[AssetProbe]) -> str:
+    if not probes:
+        return '        // No token-like getters inferred from ABI/source.'
+    return "\n".join(
+        f'        if (index == {i}) return "{_sol_string(probe.name)}";'
+        for i, probe in enumerate(probes)
+    )
+
+
+def _render_accounting_getter_selector(probes: list[AccountingProbe]) -> str:
+    if not probes:
+        return "        // No accounting getters inferred from ABI/source."
+    return "\n".join(
+        f'        if (index == {i}) return bytes4(keccak256(bytes("{probe.signature}")));'
+        for i, probe in enumerate(probes)
+    )
+
+
+def _render_accounting_getter_name(probes: list[AccountingProbe]) -> str:
+    if not probes:
+        return '        // No accounting getters inferred from ABI/source.'
+    return "\n".join(
+        f'        if (index == {i}) return "{_sol_string(probe.name)}";'
+        for i, probe in enumerate(probes)
+    )
+
+
+def _render_detector_invariant_test(
+    address: str,
+    functions: list[str],
+    stateful_functions: list[str] | None = None,
+    asset_probes: list[AssetProbe] | None = None,
+    accounting_probes: list[AccountingProbe] | None = None,
+) -> str:
     target_literal = _address_literal(address)
+    probes = asset_probes or []
+    accounting = accounting_probes or []
+    asset_getter_count = len(probes)
+    accounting_getter_count = len(accounting)
+    asset_selector_body = _render_asset_getter_selector(probes)
+    asset_name_body = _render_asset_getter_name(probes)
+    accounting_selector_body = _render_accounting_getter_selector(accounting)
+    accounting_name_body = _render_accounting_getter_name(accounting)
     body = "\n".join(functions) if functions else """
     function testFuzz_detector_raw(bytes calldata payload) public {
         _probe("generic", "raw calldata", payload);
@@ -870,14 +1090,24 @@ def _render_detector_invariant_test(address: str, functions: list[str], stateful
     }
 """
     return f"""// SPDX-License-Identifier: MIT
-// AUTO-GENERATED by BulkAuditAI Elite fuzzing phase 2.
-// Detector findings choose the focus. Phase 2 adds attacker/honest actors,
-// repeated scenarios, replay probes, and first-pass safety assertions.
+// AUTO-GENERATED by BulkAuditAI Elite fuzzing phase 4.
+// Detector findings choose the focus. Phase 4 adds fork hydration and protocol
+// accounting snapshots on top of token/share balance-aware stateful scenarios.
 pragma solidity ^0.8.23;
 
 interface Vm {{
     function prank(address actor) external;
     function assume(bool condition) external;
+    function deal(address who, uint256 newBalance) external;
+    function envOr(string calldata key, bool defaultValue) external view returns (bool);
+    function envOr(string calldata key, uint256 defaultValue) external view returns (uint256);
+    function envOr(string calldata key, string calldata defaultValue) external view returns (string memory);
+    function createSelectFork(string calldata urlOrAlias, uint256 blockNumber) external returns (uint256);
+}}
+
+interface IERC20Like {{
+    function balanceOf(address account) external view returns (uint256);
+    function totalSupply() external view returns (uint256);
 }}
 
 contract BulkAuditDetectorInvariants {{
@@ -889,11 +1119,35 @@ contract BulkAuditDetectorInvariants {{
     uint256 public detectorCalls;
     uint256 public detectorSuccesses;
     uint256 public statefulScenarios;
+    bool public forkHydrated;
+    uint256 public forkBlock;
 
     event DetectorProbe(string detector, string propertyName, bytes data, bool ok, bytes ret);
     event StatefulProbe(address indexed actor, string detector, string propertyName, bool ok, bytes ret);
+    event ForkHydration(bool hydrated, uint256 blockNumber, uint256 assetGetters, uint256 accountingGetters);
 
     receive() external payable {{}}
+
+    function setUp() public {{
+        bool hydrateFork = vm.envOr("BULKAUDIT_FORK", false);
+        if (hydrateFork) {{
+            string memory rpcUrlOrAlias = vm.envOr("BULKAUDIT_RPC_URL", string(""));
+            uint256 blockNumber = vm.envOr("BULKAUDIT_FORK_BLOCK", uint256(0));
+            if (bytes(rpcUrlOrAlias).length != 0 && blockNumber != 0) {{
+                vm.createSelectFork(rpcUrlOrAlias, blockNumber);
+                forkHydrated = true;
+                forkBlock = blockNumber;
+            }}
+        }}
+
+        bool seedEth = vm.envOr("BULKAUDIT_SEED_ETH", false);
+        if (seedEth) {{
+            vm.deal(ATTACKER, vm.envOr("BULKAUDIT_ATTACKER_ETH", uint256(100 ether)));
+            vm.deal(HONEST_A, vm.envOr("BULKAUDIT_HONEST_ETH", uint256(100 ether)));
+            vm.deal(HONEST_B, vm.envOr("BULKAUDIT_HONEST_B_ETH", uint256(100 ether)));
+        }}
+        emit ForkHydration(forkHydrated, forkBlock, _assetGetterCount(), _accountingGetterCount());
+    }}
 
     function test_target_has_code() public view {{
         require(TARGET.code.length > 0, "target has no code; run on a fork or replace TARGET");
@@ -929,6 +1183,138 @@ contract BulkAuditDetectorInvariants {{
         require(actor.balance <= beforeActor, "actor ETH increased during detector scenario");
     }}
 
+    function _assetGetterCount() internal pure returns (uint256) {{
+        return {asset_getter_count};
+    }}
+
+    function _assetGetterSelector(uint256 index) internal pure returns (bytes4) {{
+{asset_selector_body}
+        return bytes4(0);
+    }}
+
+    function _assetGetterName(uint256 index) internal pure returns (string memory) {{
+{asset_name_body}
+        return "unknown";
+    }}
+
+    function _accountingGetterCount() internal pure returns (uint256) {{
+        return {accounting_getter_count};
+    }}
+
+    function _accountingGetterSelector(uint256 index) internal pure returns (bytes4) {{
+{accounting_selector_body}
+        return bytes4(0);
+    }}
+
+    function _accountingGetterName(uint256 index) internal pure returns (string memory) {{
+{accounting_name_body}
+        return "unknown";
+    }}
+
+    function _readAssetGetter(uint256 index) internal view returns (address asset) {{
+        bytes4 selector = _assetGetterSelector(index);
+        if (selector == bytes4(0)) return address(0);
+        (bool ok, bytes memory ret) = TARGET.staticcall(abi.encodeWithSelector(selector));
+        if (!ok || ret.length < 32) return address(0);
+        return abi.decode(ret, (address));
+    }}
+
+    function _safeTokenBalance(address asset, address account) internal view returns (uint256 value, bool ok) {{
+        if (asset == address(0) || asset.code.length == 0) return (0, false);
+        bytes memory ret;
+        (ok, ret) = asset.staticcall(abi.encodeWithSelector(IERC20Like.balanceOf.selector, account));
+        if (!ok || ret.length < 32) return (0, false);
+        return (abi.decode(ret, (uint256)), true);
+    }}
+
+    function _safeTokenSupply(address asset) internal view returns (uint256 value, bool ok) {{
+        if (asset == address(0) || asset.code.length == 0) return (0, false);
+        bytes memory ret;
+        (ok, ret) = asset.staticcall(abi.encodeWithSelector(IERC20Like.totalSupply.selector));
+        if (!ok || ret.length < 32) return (0, false);
+        return (abi.decode(ret, (uint256)), true);
+    }}
+
+    function _satAdd(uint256 a, uint256 b) internal pure returns (uint256) {{
+        unchecked {{
+            uint256 c = a + b;
+            return c < a ? type(uint256).max : c;
+        }}
+    }}
+
+    function _assetSnapshot(address actor)
+        internal
+        view
+        returns (uint256 targetTotal, uint256 actorTotal, uint256 supplyTotal, uint256 observed)
+    {{
+        for (uint256 i = 0; i < _assetGetterCount(); i++) {{
+            address asset = _readAssetGetter(i);
+            if (asset == address(0)) continue;
+            (uint256 targetBalance, bool targetOk) = _safeTokenBalance(asset, TARGET);
+            (uint256 actorBalance, bool actorOk) = _safeTokenBalance(asset, actor);
+            (uint256 supply, bool supplyOk) = _safeTokenSupply(asset);
+            if (targetOk || actorOk || supplyOk) {{
+                observed++;
+                targetTotal = _satAdd(targetTotal, targetBalance);
+                actorTotal = _satAdd(actorTotal, actorBalance);
+                supplyTotal = _satAdd(supplyTotal, supply);
+            }}
+        }}
+    }}
+
+    function _readAccountingGetter(uint256 index) internal view returns (uint256 value, bool ok) {{
+        bytes4 selector = _accountingGetterSelector(index);
+        if (selector == bytes4(0)) return (0, false);
+        bytes memory ret;
+        (ok, ret) = TARGET.staticcall(abi.encodeWithSelector(selector));
+        if (!ok || ret.length < 32) return (0, false);
+        assembly {{
+            value := mload(add(ret, 32))
+            if gt(mload(ret), 63) {{
+                let second := mload(add(ret, 64))
+                let sum := add(value, second)
+                if lt(sum, value) {{
+                    sum := not(0)
+                }}
+                value := sum
+            }}
+        }}
+        return (value, true);
+    }}
+
+    function _accountingSnapshot() internal view returns (uint256 accountingTotal, uint256 observed) {{
+        for (uint256 i = 0; i < _accountingGetterCount(); i++) {{
+            (uint256 value, bool ok) = _readAccountingGetter(i);
+            if (!ok) continue;
+            observed++;
+            accountingTotal = _satAdd(accountingTotal, value);
+        }}
+    }}
+
+    function _assertNoAssetProfit(
+        uint256 beforeTarget,
+        uint256 beforeActor,
+        uint256 beforeSupply,
+        uint256 beforeObserved,
+        address actor
+    ) internal view {{
+        if (beforeObserved == 0) return;
+        (uint256 afterTarget, uint256 afterActor, uint256 afterSupply, uint256 afterObserved) = _assetSnapshot(actor);
+        if (afterObserved == 0) return;
+        require(afterActor <= beforeActor, "actor asset balance increased during detector scenario");
+        require(
+            afterTarget >= beforeTarget || afterSupply < beforeSupply,
+            "target asset balance decreased during detector scenario"
+        );
+    }}
+
+    function _assertAccountingStable(uint256 beforeTotal, uint256 beforeObserved) internal view {{
+        if (beforeObserved == 0) return;
+        (uint256 afterTotal, uint256 afterObserved) = _accountingSnapshot();
+        if (afterObserved == 0) return;
+        require(afterTotal <= beforeTotal, "accounting total increased during repeat/replay scenario");
+    }}
+
     function _statefulSingleNoProfit(
         string memory detector,
         string memory propertyName,
@@ -937,8 +1323,11 @@ contract BulkAuditDetectorInvariants {{
         statefulScenarios++;
         uint256 beforeTarget = TARGET.balance;
         uint256 beforeActor = ATTACKER.balance;
+        (uint256 beforeAssetTarget, uint256 beforeAssetActor, uint256 beforeAssetSupply, uint256 beforeObserved) =
+            _assetSnapshot(ATTACKER);
         _actorProbe(ATTACKER, detector, propertyName, data);
         _assertNoEthProfit(beforeTarget, beforeActor, ATTACKER);
+        _assertNoAssetProfit(beforeAssetTarget, beforeAssetActor, beforeAssetSupply, beforeObserved, ATTACKER);
     }}
 
     function _statefulRepeatNoProfit(
@@ -949,10 +1338,15 @@ contract BulkAuditDetectorInvariants {{
         statefulScenarios++;
         uint256 beforeTarget = TARGET.balance;
         uint256 beforeActor = ATTACKER.balance;
+        (uint256 beforeAssetTarget, uint256 beforeAssetActor, uint256 beforeAssetSupply, uint256 beforeObserved) =
+            _assetSnapshot(ATTACKER);
+        (uint256 beforeAccountingTotal, uint256 beforeAccountingObserved) = _accountingSnapshot();
         _actorProbe(ATTACKER, detector, propertyName, data);
         _actorProbe(ATTACKER, detector, propertyName, data);
         _actorProbe(ATTACKER, detector, propertyName, data);
         _assertNoEthProfit(beforeTarget, beforeActor, ATTACKER);
+        _assertNoAssetProfit(beforeAssetTarget, beforeAssetActor, beforeAssetSupply, beforeObserved, ATTACKER);
+        _assertAccountingStable(beforeAccountingTotal, beforeAccountingObserved);
     }}
 
     function _statefulReplayNoProfit(
@@ -963,10 +1357,15 @@ contract BulkAuditDetectorInvariants {{
         statefulScenarios++;
         uint256 beforeTarget = TARGET.balance;
         uint256 beforeActor = ATTACKER.balance;
+        (uint256 beforeAssetTarget, uint256 beforeAssetActor, uint256 beforeAssetSupply, uint256 beforeObserved) =
+            _assetSnapshot(ATTACKER);
+        (uint256 beforeAccountingTotal, uint256 beforeAccountingObserved) = _accountingSnapshot();
         (bool firstOk,) = _actorProbe(ATTACKER, detector, propertyName, data);
         (bool secondOk,) = _actorProbe(ATTACKER, detector, propertyName, data);
         require(!(firstOk && secondOk && TARGET.balance < beforeTarget), "replay path drained target ETH");
         _assertNoEthProfit(beforeTarget, beforeActor, ATTACKER);
+        _assertNoAssetProfit(beforeAssetTarget, beforeAssetActor, beforeAssetSupply, beforeObserved, ATTACKER);
+        _assertAccountingStable(beforeAccountingTotal, beforeAccountingObserved);
     }}
 
     function _statefulUnauthorizedMustRevert(
@@ -985,7 +1384,16 @@ contract BulkAuditDetectorInvariants {{
 """
 
 
-def _render_detector_invariant_plan(ctx: TargetContext, rows: list[dict]) -> str:
+def _render_detector_invariant_plan(
+    ctx: TargetContext,
+    rows: list[dict],
+    asset_probes: list[AssetProbe] | None = None,
+    accounting_probes: list[AccountingProbe] | None = None,
+) -> str:
+    probes = asset_probes or []
+    accounting = accounting_probes or []
+    asset_probe_text = "\n".join(f"- `{probe.signature}`" for probe in probes) or "- none inferred"
+    accounting_probe_text = "\n".join(f"- `{probe.signature}`" for probe in accounting) or "- none inferred"
     if rows:
         row_text = "\n\n".join(
             "\n".join(
@@ -997,6 +1405,8 @@ def _render_detector_invariant_plan(ctx: TargetContext, rows: list[dict]) -> str
                     f"- Finding: {row['title']}",
                     f"- Template: `{row['template']}`",
                     f"- ABI probe: `{row['abi_signature']}`",
+                    f"- Asset snapshots: {row['asset_probes']}",
+                    f"- Accounting snapshots: {row['accounting_probes']}",
                     f"- Property: {row['property_name']}",
                     f"- Property goal: {row['goal']}",
                     f"- Next manual assertion: {row['next_assertion']}",
@@ -1014,9 +1424,26 @@ Chain: `{ctx.chain}`
 Contract: `{ctx.contract_name or 'unknown'}`
 
 This Foundry project is generated from detector findings after deduplication.
-Elite phase 2 adds attacker/honest actor scaffolding and first-pass assertions
-for replay, unauthorized reachability, repeated zero-value transfer paths, and
-unexpected ETH profit. Token-specific balance assertions still need target wiring.
+Elite phase 4 adds fork hydration plus protocol accounting snapshots from
+inferred getters on top of token/share balance-aware attacker and replay
+scenarios.
+
+## Fork Hydration
+
+Set these env vars before running the generated suite against live state:
+
+- `BULKAUDIT_FORK=true`
+- `BULKAUDIT_RPC_URL=<rpc url or foundry alias>`
+- `BULKAUDIT_FORK_BLOCK=<historical or latest block>`
+- `BULKAUDIT_SEED_ETH=true` to seed attacker/honest actors with test ETH
+
+## Inferred Asset Getters
+
+{asset_probe_text}
+
+## Inferred Accounting Getters
+
+{accounting_probe_text}
 
 ## Generated Probes
 
@@ -1024,9 +1451,9 @@ unexpected ETH profit. Token-specific balance assertions still need target wirin
 
 ## Next Phase
 
-Elite phase 3 should bind live token/vault/bridge balances into the generated
-stateful scenarios, so the harness can assert ERC20/ERC721/ERC1155 and share
-accounting deltas instead of only ETH/code/reachability properties.
+Elite phase 5 should create an exploit-regression benchmark pack: known target
+addresses, expected detector families, expected invariant generators, and CI
+gates that fail when a previously detected exploit class disappears.
 """
 
 
