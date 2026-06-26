@@ -56,6 +56,7 @@ class BytecodePeripheryDetector(Detector):
         if not meta or not meta.get("code_size_bytes"):
             return []
 
+        probe_meta = (ctx.tool_outputs.get("bytecode-probes") or {}).get("meta") or {}
         source_verified = bool(meta.get("source_verified") or ctx.source_files)
         out: list[FindingCandidate] = []
         for signal in meta.get("risk_signals") or []:
@@ -89,7 +90,12 @@ class BytecodePeripheryDetector(Detector):
                     "risk_signal": signal,
                     "decompiler_summary": meta.get("decompiler_summary", []),
                 },
+                "bytecode_probe_plan": _probe_evidence(probe_meta, rule_id),
             }
+            next_tests = list(signal.get("next_tests") or [])
+            probe_tests = _probe_next_tests(probe_meta, rule_id)
+            if probe_tests:
+                next_tests = probe_tests + next_tests
             out.append(FindingCandidate(
                 detector=self.name,
                 title=signal.get("title") or f"Bytecode periphery risk: {rule_id}",
@@ -98,7 +104,7 @@ class BytecodePeripheryDetector(Detector):
                 confidence_score=conf,
                 severity_candidate=_SEVERITY_BY_RULE.get(rule_id, "high"),
                 evidence=evidence,
-                next_tests=signal.get("next_tests") or [
+                next_tests=next_tests or [
                     "Run a focused decompiler/fork trace on the bytecode dispatch path.",
                     "Resolve live owner/admin/operator state before claiming exploitability.",
                 ],
@@ -121,3 +127,43 @@ def _interesting_opcode_counts(counts: dict) -> dict:
         "CREATE2",
     )
     return {op: counts.get(op, 0) for op in interesting if counts.get(op, 0)}
+
+
+def _probe_evidence(probe_meta: dict, rule_id: str) -> dict:
+    if not probe_meta:
+        return {}
+    probes = [
+        {
+            "signature": p.get("signature"),
+            "selector": p.get("selector"),
+            "kind": p.get("kind"),
+            "must_fail": p.get("must_fail"),
+            "cast_call": p.get("cast_call"),
+        }
+        for p in (probe_meta.get("probes") or [])
+        if p.get("rule_id") == rule_id
+    ]
+    return {
+        "suite": probe_meta.get("suite"),
+        "probe_count": len(probes),
+        "probes": probes[:8],
+        "artifact_paths": probe_meta.get("artifact_paths", {}),
+    }
+
+
+def _probe_next_tests(probe_meta: dict, rule_id: str) -> list[str]:
+    if not probe_meta:
+        return []
+    out: list[str] = []
+    artifact_paths = probe_meta.get("artifact_paths") or {}
+    if artifact_paths.get("foundry_harness"):
+        out.append(f"Run the generated fork harness: {artifact_paths['foundry_harness']}")
+    for probe in (probe_meta.get("probes") or []):
+        if probe.get("rule_id") != rule_id:
+            continue
+        cast_call = probe.get("cast_call")
+        if cast_call:
+            out.append(f"Read-only selector probe: {cast_call}")
+        if len(out) >= 4:
+            break
+    return out

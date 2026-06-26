@@ -47,6 +47,7 @@ class Settings(BaseSettings):
     enable_foundry: bool = Field(default=False, alias="ENABLE_FOUNDRY")
     enable_fuzzing: bool = Field(default=False, alias="ENABLE_FUZZING")
     enable_bytecode_intel: bool = Field(default=True, alias="ENABLE_BYTECODE_INTEL")
+    enable_bytecode_probes: bool = Field(default=True, alias="ENABLE_BYTECODE_PROBES")
     enable_deepseek: bool = Field(default=True, alias="ENABLE_DEEPSEEK")
     # --- New reasoning layers (gaps #1/#3/#8) ------------------------------- #
     enable_invariant_reasoner: bool = Field(default=True, alias="ENABLE_INVARIANT_REASONER")
@@ -153,6 +154,7 @@ def masked_settings() -> dict:
             "foundry": s.enable_foundry,
             "fuzzing": s.enable_fuzzing,
             "bytecode_intel": s.enable_bytecode_intel,
+            "bytecode_probes": s.enable_bytecode_probes,
             "deepseek": s.enable_deepseek,
             "invariant_reasoner": s.enable_invariant_reasoner,
             "refutation": s.enable_refutation,

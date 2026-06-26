@@ -37,6 +37,7 @@ from ..models import (
 )
 from . import coverage as coverage_mod
 from . import bytecode_intel
+from . import bytecode_probes
 from . import dedup
 from . import evidence as evidence_mod
 from . import flashloan_sim
@@ -401,6 +402,38 @@ async def process_target(
             scan_id,
             {"type": "tool_update", "target_id": target_id, "tool": "bytecode-intel",
              "status": bytecode_res.status, "summary": bytecode_res.summary},
+        )
+
+    if _toggle(toggles, "bytecode_probes", s.enable_bytecode_probes):
+        tr = _create_toolrun(target_id, "bytecode-probes")
+        hub.publish(
+            scan_id,
+            {"type": "tool_update", "target_id": target_id, "tool": "bytecode-probes", "status": "running"},
+        )
+        try:
+            _log(scan_id, f"[{address}] bytecode-probes: selector-specific fork probe plan")
+            probe_res = await asyncio.to_thread(
+                bytecode_probes.run_bytecode_probes,
+                bytecode_meta=(tool_outputs.get("bytecode-intel") or {}).get("meta"),
+                out_dir=workspace["bytecode_probes"],
+                address=address,
+                chain=chain,
+            )
+        except Exception as exc:
+            logger.warning("bytecode-probes failed on %s: %s", address, exc)
+            probe_res = _skip_runner("bytecode-probes", f"runner crashed: {exc}")
+            probe_res.status = "failed"
+        tool_outputs["bytecode-probes"] = {
+            "summary": probe_res.summary,
+            "findings": probe_res.findings,
+            "status": probe_res.status,
+            "meta": probe_res.meta,
+        }
+        _finalize_toolrun(tr.id, probe_res)
+        hub.publish(
+            scan_id,
+            {"type": "tool_update", "target_id": target_id, "tool": "bytecode-probes",
+             "status": probe_res.status, "summary": probe_res.summary},
         )
 
     if _toggle(toggles, "fuzzing", s.enable_fuzzing):

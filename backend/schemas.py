@@ -24,6 +24,7 @@ class ScanToggles(BaseModel):
     foundry: bool | None = None
     fuzzing: bool | None = None
     bytecode_intel: bool | None = None
+    bytecode_probes: bool | None = None
     deepseek: bool | None = None
 
 

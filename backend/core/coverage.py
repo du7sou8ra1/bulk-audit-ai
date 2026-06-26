@@ -68,6 +68,10 @@ def build_coverage(
     bytecode_status = bytecode_out.get("status")
     bytecode_risks = bytecode_meta.get("risk_signals") or []
     bytecode_clusters = bytecode_meta.get("selector_clusters") or {}
+    bytecode_probe_out = ctx.tool_outputs.get("bytecode-probes") or {}
+    bytecode_probe_meta = bytecode_probe_out.get("meta") or {}
+    bytecode_probe_status = bytecode_probe_out.get("status")
+    bytecode_probe_count = len(bytecode_probe_meta.get("probes") or [])
     if bytecode_status == "ok":
         examined.append("bytecode_periphery")
     elif not source_verified:
@@ -94,6 +98,7 @@ def build_coverage(
         f"State-changing external functions in scope: {n_ext}. "
         f"{('Bytecode-intel saw selector clusters '+', '.join(sorted(bytecode_clusters))+'. ') if bytecode_clusters else ''}"
         f"{('Bytecode risk signals: '+', '.join(r.get('rule_id','?') for r in bytecode_risks)+'. ') if bytecode_risks else ''}"
+        f"{('Bytecode selector probes generated: '+str(bytecode_probe_count)+'. ') if bytecode_probe_count else ''}"
         f"{('NOT covered (no detector fired for): '+', '.join(gaps)+'. ') if gaps else ''}"
         f"{('Out of tool scope: '+'; '.join(out_of_tool_scope)+'. ') if out_of_tool_scope else ''}"
         f"{candidate_count} candidate(s) produced. "
@@ -115,6 +120,11 @@ def build_coverage(
             "code_size_bytes": bytecode_meta.get("code_size_bytes"),
             "selector_clusters": bytecode_clusters,
             "risk_signals": [r.get("rule_id") for r in bytecode_risks],
+        },
+        "bytecode_probes": {
+            "status": bytecode_probe_status,
+            "probe_count": bytecode_probe_count,
+            "artifact_paths": bytecode_probe_meta.get("artifact_paths", {}),
         },
         "candidate_count": candidate_count,
         "honest_summary": honest,

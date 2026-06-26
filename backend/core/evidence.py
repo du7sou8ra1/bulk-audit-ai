@@ -31,6 +31,7 @@ def create_target_workspace(scan_id: int, address: str) -> dict[str, Path]:
         "mythril": base / "tools" / "mythril",
         "semgrep": base / "tools" / "semgrep",
         "bytecode": base / "tools" / "bytecode-intel",
+        "bytecode_probes": base / "tools" / "bytecode-probes",
         "foundry": base / "tools" / "foundry",
         "fuzz": base / "tools" / "fuzz",
         "evidence": base / "evidence",
@@ -85,8 +86,10 @@ def build_ai_packet(
         "mythril": (ctx.tool_outputs.get("mythril") or {}).get("findings", []),
         "semgrep": (ctx.tool_outputs.get("semgrep") or {}).get("findings", []),
         "bytecode-intel": (ctx.tool_outputs.get("bytecode-intel") or {}).get("findings", []),
+        "bytecode-probes": (ctx.tool_outputs.get("bytecode-probes") or {}).get("findings", []),
     }
     bytecode_meta = (ctx.tool_outputs.get("bytecode-intel") or {}).get("meta", {})
+    bytecode_probe_meta = (ctx.tool_outputs.get("bytecode-probes") or {}).get("meta", {})
 
     packet = {
         "target": {
@@ -119,6 +122,7 @@ def build_ai_packet(
         "evidence": candidate.evidence,
         "tool_summaries": tool_summaries,
         "bytecode_intel": _trim(bytecode_meta, max_str=900, max_list=8),
+        "bytecode_probes": _trim(bytecode_probe_meta, max_str=900, max_list=8),
         "onchain_checks": onchain_checks,
         "source_snippets": snippets,
         "next_tests_suggested": candidate.next_tests,
