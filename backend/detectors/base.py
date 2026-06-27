@@ -95,6 +95,8 @@ ACCESS_CONTROL_MARKERS = (
     "onlyGovernance",
     "onlyGovernor",
     "onlyProxyAdmin",
+    "proxyCallIfNotAdmin",
+    "onlyUninitialized",
     "onlyTimelock",
     "onlySelf",
     "onlyManager",
@@ -104,6 +106,7 @@ ACCESS_CONTROL_MARKERS = (
     "restricted",
     "onlyEntryPoint",
     "ifAdmin",
+    "ifNotAdmin",
     "onlyProxy",
     "notDelegated",
 )

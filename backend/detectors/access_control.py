@@ -44,6 +44,7 @@ _INLINE_AUTH_RE = re.compile(
     r"|_check(?:Owner|Role|Admin|Access|Auth|Governor|Governance)\w*\s*\("
     r"|_require(?:Owner|Admin|Role|Governance|Auth|Master|Caller|Sender)\w*\s*\("
     r"|\bhasRole\s*\("
+    r"|\bproxyCallIfNotAdmin\b|\bifAdmin\b|\bifNotAdmin\b|\bonlyUninitialized\b"
     # NB: `_authorizeUpgrade` deliberately NOT here — an EMPTY override is the bug,
     # so the bare token must not count as a guard (see the UUPS rule below).
     r"|isAuthorized|\baccessControlled\b|requiresAuth"
@@ -52,8 +53,12 @@ _INLINE_AUTH_RE = re.compile(
     r"Guardian|Keeper|Minter|Self|Auth|Master|Lister|Validator)\w*\s*\([^;{}]*\)\s*;",
     re.IGNORECASE,
 )
-_INIT_GUARD_RE = re.compile(r"initializer|reinitializer|_disableInitializers|"
-                            r"require\s*\([^)]*initialized", re.IGNORECASE)
+_INIT_GUARD_RE = re.compile(
+    r"initializer|reinitializer|onlyUninitialized|_disableInitializers|"
+    r"require\s*\([^)]*initialized|require\s*\([^)]*!+\s*_?initialized|"
+    r"require\s*\([^)]*owner\s*==\s*address\s*\(\s*0\s*\)",
+    re.IGNORECASE,
+)
 _TXORIGIN_RE = re.compile(r"tx\.origin\s*==|==\s*tx\.origin|require\s*\([^)]*tx\.origin", re.IGNORECASE)
 
 
@@ -169,6 +174,8 @@ class AccessControlDetector(Detector):
                 if _PRIV_RE.match(lname) and not guarded \
                         and not (ultra and _POLICY_HOOK_RE.search(lname)) \
                         and not lname.startswith(("get", "view", "is", "preview")):
+                    if _is_normal_user_asset_method(lname, body):
+                        continue
                     # require it actually changes state / moves value (avoid pure getters)
                     if re.search(r"=|\.transfer|\.call|_mint|_burn|delete\b|push\s*\(", body):
                         findings.append(self._c(
@@ -197,3 +204,37 @@ class AccessControlDetector(Detector):
             severity_candidate="critical" if impact >= 9 else "high",
             evidence=ev, next_tests=tests, affected_functions=[fname],
         )
+
+
+_USER_ASSET_METHOD_RE = re.compile(r"^(withdraw|redeem|deposit|mint|burn)$", re.I)
+_PRIVILEGED_WORD_RE = re.compile(
+    r"owner|admin|govern|guardian|operator|keeper|manager|fee|treasury|"
+    r"collector|sweep|rescue|emergency|pause|upgrade|implementation",
+    re.I,
+)
+
+
+def _is_normal_user_asset_method(lname: str, body: str) -> bool:
+    """Suppress ERC20/ERC4626-style public user entry/exit methods.
+
+    A public withdraw/redeem/mint/deposit is not privileged by name alone. Keep
+    these silent when the body is account-bound to msg.sender/owner/receiver and
+    does not touch admin/fee/governance surfaces.
+    """
+    if not _USER_ASSET_METHOD_RE.match(lname):
+        return False
+    b = body or ""
+    if _PRIVILEGED_WORD_RE.search(b):
+        return False
+    user_bound = bool(
+        re.search(r"\bmsg\.sender\b|_msgSender\s*\(|\bowner\b|\breceiver\b", b)
+    )
+    asset_flow = bool(
+        re.search(
+            r"_burn\s*\(|_mint\s*\(|transferFrom\s*\(|safeTransferFrom\s*\(|"
+            r"safeTransfer\s*\(|\.transfer\s*\(|balances?\s*\[\s*(?:msg\.sender|owner|receiver)",
+            b,
+            re.I,
+        )
+    )
+    return user_bound and asset_flow

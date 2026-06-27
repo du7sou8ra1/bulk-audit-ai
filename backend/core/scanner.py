@@ -36,8 +36,10 @@ from ..models import (
     utcnow,
 )
 from . import coverage as coverage_mod
+from .audit_knowledge import annotate_candidate
 from . import bytecode_intel
 from . import bytecode_probes
+from .candidate_sanity import apply_candidate_sanity
 from . import dedup
 from . import evidence as evidence_mod
 from . import flashloan_sim
@@ -365,7 +367,7 @@ async def process_target(
         # Detectors/reasoner see PROJECT code only (skip audited OZ/Solady libs);
         # the static tools still compile the full set from the workspace.
         source_files=project_source_files(source_files),
-        abi=pkg.abi if pkg.abi is not None else (impl_pkg.abi if impl_pkg else None),
+        abi=_combine_abis(pkg.abi, impl_pkg.abi if impl_pkg else None),
         bytecode=bytecode,
         tool_outputs=tool_outputs,
     )
@@ -502,6 +504,16 @@ async def process_target(
             logger.warning("invariant reasoner failed on %s: %s", address, exc)
             _log(scan_id, f"[{address}] invariant reasoner error: {exc}")
 
+    sanity_suppressed = apply_candidate_sanity(ctx, candidates)
+    if sanity_suppressed:
+        _log(scan_id, f"[{address}] sanity filter: suppressed {sanity_suppressed} obvious false-positive candidate(s)")
+
+    knowledge_matches = 0
+    for cand in candidates:
+        knowledge_matches += len(annotate_candidate(cand))
+    if knowledge_matches:
+        _log(scan_id, f"[{address}] audit knowledge: attached {knowledge_matches} historical match(es)")
+
     # Cross-signal corroboration: mark findings that >=2 independent detectors /
     # the reasoner flagged on the same function (scoring then bumps confidence).
     mark_corroboration(candidates)
@@ -566,9 +578,12 @@ async def process_target(
 
         # FP-learning (dedup): a candidate matching a user-marked false-positive
         # fingerprint is suppressed and skips every expensive step below.
-        suppressed = dedup.apply_suppression(cand, address)
+        suppressed = bool((cand.evidence or {}).get("suppressed"))
+        known_suppressed = dedup.apply_suppression(cand, address)
+        suppressed = suppressed or known_suppressed
         if suppressed:
-            _log(scan_id, f"[{address}] suppressed (known FP): {cand.title[:70]}")
+            reason = (cand.evidence or {}).get("suppressed_reason") or "known false-positive"
+            _log(scan_id, f"[{address}] suppressed: {cand.title[:70]} ({reason[:120]})")
 
         # Adversarial refutation (gap #3): an independent skeptic reads the code
         # and tries to DISPROVE the finding before it is scored. Skip pure-info
@@ -748,6 +763,30 @@ def _finding_slug(detector: str, index: int, fn: str | None) -> str:
     the LLM reasoner can contain '/', spaces, etc. that would break the path."""
     raw = f"{detector}_{index}_{fn or 'x'}"
     return re.sub(r"[^A-Za-z0-9_.-]", "_", raw)[:120]
+
+
+def _combine_abis(*abis):
+    """Merge proxy + implementation ABI entries for reachability checks."""
+    out = []
+    seen = set()
+    for abi in abis:
+        if isinstance(abi, dict):
+            abi = abi.get("abi")
+        if not isinstance(abi, list):
+            continue
+        for item in abi:
+            if not isinstance(item, dict):
+                continue
+            key = (
+                item.get("type"),
+                item.get("name"),
+                tuple((inp or {}).get("type") for inp in (item.get("inputs") or [])),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(item)
+    return out or None
 
 
 def _pick_main_source(source_dir: Path, contract_name: str | None) -> Path | None:

@@ -275,6 +275,8 @@ def mark_corroboration(candidates: list) -> None:
     by_fn: dict[str, set] = defaultdict(set)
     cands_by_fn: dict[str, list] = defaultdict(list)
     for c in candidates:
+        if (getattr(c, "evidence", None) or {}).get("suppressed"):
+            continue
         for fn in (getattr(c, "affected_functions", None) or []):
             if not fn:
                 continue

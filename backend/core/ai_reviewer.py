@@ -28,6 +28,8 @@ Classify the finding as exactly one of: CONFIRMED_CRITICAL, LIKELY_CRITICAL_NEED
 NEEDS_MORE_INVESTIGATION, LOW_OR_INFO, FALSE_POSITIVE. Be strict: most candidates are
 false positives or need more investigation. Do not classify governance/admin power as a
 bug unless there is unauthorized access, a public role, a role mismatch, or a bypass.
+Historical audit-corpus matches are precedent/context only, never proof of target
+exploitability.
 Return ONLY JSON with keys: classification, severity, confidence, rationale, why_not_higher,
 next_tests, reportability."""
 

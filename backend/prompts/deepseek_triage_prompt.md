@@ -17,10 +17,11 @@ Rules:
 7. If the ONLY evidence is trusted owner/governance power, classify as LOW_OR_INFO unless there is unauthorized access, a public role, a role mismatch, or a documented-scope mismatch.
 8. Be strict. Most candidates are false positives or need more investigation.
 9. LEAD findings: if the packet evidence marks the finding `lead_only` (or `onchain_detectable: lead_only`), the detector has ALREADY determined it cannot be confirmed from Solidity alone — the binding may live in the off-chain ZK circuit, or confirming it needs a fork PoC. Do NOT classify it FALSE_POSITIVE merely because you cannot confirm it from the source; that is its EXPECTED state, not a refutation. Classify FALSE_POSITIVE only if you can cite a CONCRETE on-chain control that defuses it (an equality/range require binding the value or count to the proof, a hash-compare against a committed value, an access modifier). Otherwise use NEEDS_MORE_INVESTIGATION (or LIKELY_CRITICAL_NEEDS_POC when the structural evidence is strong and impact is high). The Aztec Connect settlement-boundary drain is exactly this class: verify() was present, yet numTxs was unbound — a lead that must reach a human, not be hidden as a false positive.
+10. Historical audit-corpus matches in `evidence.audit_knowledge.matches` are precedent/context only. Use them to understand the vulnerability class and missing proof shape, but never treat a corpus match as proof that this target is exploitable. If there is no close corpus match, require stronger target-specific source, ABI, on-chain, or fork evidence before high classifications.
 
 You will receive a compact JSON evidence packet containing: target metadata,
-the candidate finding, raw evidence, static-tool summaries (slither/mythril/semgrep),
-on-chain read results, and source snippets.
+the candidate finding, raw evidence, historical audit-corpus matches, static-tool
+summaries (slither/mythril/semgrep), on-chain read results, and source snippets.
 
 Return ONLY a JSON object with exactly these keys:
 {
