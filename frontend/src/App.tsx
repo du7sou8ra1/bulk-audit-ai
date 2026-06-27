@@ -2,6 +2,7 @@ import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import Sidebar from './components/Sidebar'
 import ErrorBoundary from './components/ErrorBoundary'
 import Dashboard from './pages/Dashboard'
+import ScansHistory from './pages/ScansHistory'
 import NewScan from './pages/NewScan'
 import ScanDetail from './pages/ScanDetail'
 import ContractDetail from './pages/ContractDetail'
@@ -22,6 +23,7 @@ export default function App() {
           <ErrorBoundary key={location.pathname}>
             <Routes>
               <Route path="/" element={<Dashboard />} />
+              <Route path="/scans" element={<ScansHistory />} />
               <Route path="/scans/new" element={<NewScan />} />
               <Route path="/scans/:id" element={<ScanDetail />} />
               <Route path="/targets/:id" element={<ContractDetail />} />

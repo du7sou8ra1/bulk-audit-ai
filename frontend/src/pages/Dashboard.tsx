@@ -47,9 +47,14 @@ export default function Dashboard() {
         title="Dashboard"
         subtitle="Bulk smart-contract audit overview"
         actions={
-          <Link to="/scans/new" className="btn-primary">
-            New Scan
-          </Link>
+          <>
+            <Link to="/scans" className="btn-secondary">
+              All Scans
+            </Link>
+            <Link to="/scans/new" className="btn-primary">
+              New Scan
+            </Link>
+          </>
         }
       />
 
@@ -87,9 +92,16 @@ export default function Dashboard() {
             />
           </div>
 
-          <h2 className="mt-8 mb-3 text-sm font-semibold uppercase tracking-wide text-slate-400">
-            Recent scans
-          </h2>
+          <div className="mt-8 mb-3 flex items-center justify-between gap-3">
+            <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-400">
+              Recent scans
+            </h2>
+            {data.total_scans > data.recent_scans.length && (
+              <Link to="/scans" className="text-sm text-emerald-400 hover:underline">
+                View all {data.total_scans}
+              </Link>
+            )}
+          </div>
 
           {data.recent_scans.length === 0 ? (
             <EmptyState>
