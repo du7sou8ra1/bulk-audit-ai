@@ -45,6 +45,12 @@ for tool in slither-analyzer semgrep solc-select mythril; do
     || echo "    WARN: $tool failed to install (mythril is finicky; the app still runs and marks it missing on Tool Health)."
 done
 
+# Mythril 0.24.x imports pkg_resources through old ethereum dependencies.
+# New setuptools releases may omit it, so keep the pin local to Mythril's pipx
+# venv instead of polluting the app venv.
+$PIPX inject mythril "setuptools<81" \
+  || echo "    WARN: could not inject setuptools<81 into Mythril; Tool Health may mark mythril unusable."
+
 # A common default solc; adjust per target contract.
 solc-select install 0.8.19 2>/dev/null && solc-select use 0.8.19 2>/dev/null || true
 

@@ -51,16 +51,27 @@ def check_tools() -> dict:
         warning = None
 
         if installed:
+            failures: list[str] = []
             for cmd in version_cmds:
                 if which(cmd[0]) is None:
                     continue
                 res = run_command(cmd, timeout=25)
                 out = (res.stdout or "").strip() or (res.stderr or "").strip()
-                if out and not res.timed_out:
+                if out and res.ok:
                     version = _first_line(out)[:200]
                     break
+                if res.timed_out:
+                    failures.append(f"{cmd[0]} version check timed out")
+                elif res.exit_code not in (None, 0):
+                    detail = _first_line(out) or f"exit code {res.exit_code}"
+                    failures.append(f"{cmd[0]} failed: {detail[:140]}")
             if version is None:
-                warning = "installed but version check produced no output"
+                installed = False
+                warning = (
+                    f"installed but unusable — {failures[0]}"
+                    if failures
+                    else "installed but version check produced no output"
+                )
         else:
             if name in _OPTIONAL:
                 warning = "optional tool not installed"
