@@ -1,0 +1,74 @@
+{
+  "version": 1,
+  "generated_from": [
+    "AI DATA.zip",
+    "Nouveau dossier.zip"
+  ],
+  "raw_entry_count": 98634,
+  "high_or_medium_entry_count": 63535,
+  "rules": {
+    "corpus_slippage_deadline": {
+      "title": "Swap/liquidity path lacks slippage or deadline controls",
+      "raw_hits": 1600,
+      "examples": [
+        "missing slippage protection",
+        "missing deadline checks",
+        "minOut/minReceived not enforced"
+      ]
+    },
+    "corpus_chainlink_staleness": {
+      "title": "Oracle feed consumed without freshness checks",
+      "raw_hits": 1878,
+      "examples": [
+        "latestRoundData without updatedAt",
+        "stale price feed",
+        "missing answeredInRound check"
+      ]
+    },
+    "corpus_unbounded_loop_dos": {
+      "title": "Externally callable unbounded loop can DoS protocol actions",
+      "raw_hits": 3083,
+      "examples": [
+        "out of gas denial of service",
+        "unbounded loop over storage array",
+        "gas griefing"
+      ]
+    },
+    "corpus_low_level_call_unchecked": {
+      "title": "Low-level call result is not checked",
+      "raw_hits": 47,
+      "examples": [
+        "low level call return ignored",
+        "unchecked call success",
+        "failed execution treated as success"
+      ]
+    },
+    "corpus_signature_replay": {
+      "title": "Signature authorization lacks replay/domain expiry controls",
+      "raw_hits": 1306,
+      "examples": [
+        "missing nonce",
+        "missing deadline",
+        "missing chain/domain binding"
+      ]
+    },
+    "corpus_zero_address_privileged_setter": {
+      "title": "Privileged address setter accepts address(0)",
+      "raw_hits": 687,
+      "examples": [
+        "zero address guardian",
+        "zero address admin",
+        "invalid owner freezes protocol"
+      ]
+    },
+    "corpus_division_before_multiplication": {
+      "title": "Value math divides before multiplying",
+      "raw_hits": 1781,
+      "examples": [
+        "precision loss",
+        "rounding error",
+        "incorrect calculation"
+      ]
+    }
+  }
+}

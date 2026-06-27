@@ -21,6 +21,7 @@ from .arithmetic_logic import ArithmeticLogicDetector
 from .base import Detector
 from .bridge_accounting import BridgeAccountingDetector
 from .bytecode_periphery import BytecodePeripheryDetector
+from .corpus_patterns import CorpusPatternDetector
 from .delegatecall import DelegatecallDetector
 from .governance_blast_radius import GovernanceBlastRadiusDetector
 from .oracle_manipulation import OracleManipulationDetector
@@ -154,6 +155,7 @@ ULTRA_EXTRA_DETECTORS: list[type[Detector]] = [
 ]
 
 ULTRA_DEEP_V2_EXTRA_DETECTORS: list[type[Detector]] = [
+    CorpusPatternDetector,
     BytecodePeripheryDetector,
     SettlementBoundaryMismatchDetector,
     BridgeRetryDomainBindingDetector,
