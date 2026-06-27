@@ -1,11 +1,12 @@
-import { useEffect, useRef, useState, useCallback } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
   api,
   openScanSocket,
   type ScanWithTargets,
   type Finding,
   type ScanEvent,
+  type Target,
 } from '../api'
 import {
   PageHeader,
@@ -22,6 +23,18 @@ interface LogLine {
   text: string
 }
 
+type FindingSortKey =
+  | 'address'
+  | 'detector'
+  | 'title'
+  | 'impact'
+  | 'confidence'
+  | 'classification'
+  | 'status'
+
+type TargetSortKey = 'address' | 'status' | 'proxy' | 'findings'
+type SortDir = 'asc' | 'desc'
+
 function firstNextTest(finding: Finding): string {
   const t = finding.next_tests_json
   if (!Array.isArray(t) || t.length === 0) return '—'
@@ -34,8 +47,44 @@ function firstNextTest(finding: Finding): string {
   return String(head)
 }
 
+function textValue(value: unknown): string {
+  return String(value ?? '').toLowerCase()
+}
+
+function optionLabel(value: string): string {
+  return value
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (m: string) => m.toUpperCase())
+}
+
+function SortButton({
+  label,
+  active,
+  dir,
+  onClick,
+}: {
+  label: string
+  active: boolean
+  dir: SortDir
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      className={`inline-flex items-center gap-1 text-left uppercase tracking-wide ${
+        active ? 'text-emerald-300' : 'text-slate-400 hover:text-slate-200'
+      }`}
+      onClick={onClick}
+    >
+      <span>{label}</span>
+      <span className="text-[10px]">{active ? (dir === 'asc' ? '▲' : '▼') : '↕'}</span>
+    </button>
+  )
+}
+
 export default function ScanDetail() {
   const { id = '' } = useParams()
+  const navigate = useNavigate()
   const [scan, setScan] = useState<ScanWithTargets | null>(null)
   const [findings, setFindings] = useState<Finding[]>([])
   const [logs, setLogs] = useState<LogLine[]>([])
@@ -43,6 +92,17 @@ export default function ScanDetail() {
   const [loading, setLoading] = useState(true)
   const [usingWs, setUsingWs] = useState(false)
   const [cancelling, setCancelling] = useState(false)
+  const [targetQuery, setTargetQuery] = useState('')
+  const [targetSort, setTargetSort] = useState<TargetSortKey>('findings')
+  const [targetSortDir, setTargetSortDir] = useState<SortDir>('desc')
+  const [findingQuery, setFindingQuery] = useState('')
+  const [contractFilter, setContractFilter] = useState('all')
+  const [detectorFilter, setDetectorFilter] = useState('all')
+  const [classificationFilter, setClassificationFilter] = useState('all')
+  const [statusFilter, setStatusFilter] = useState('all')
+  const [hideFalsePositives, setHideFalsePositives] = useState(false)
+  const [findingSort, setFindingSort] = useState<FindingSortKey>('impact')
+  const [findingSortDir, setFindingSortDir] = useState<SortDir>('desc')
 
   const logEndRef = useRef<HTMLDivElement | null>(null)
   const pollRef = useRef<number | null>(null)
@@ -157,6 +217,147 @@ export default function ScanDetail() {
     }
   }
 
+  const activeTargets = useMemo(() => scan?.targets ?? [], [scan?.targets])
+
+  const findingsByTarget = useMemo(() => {
+    const counts: Record<string, number> = {}
+    for (const f of findings) {
+      counts[f.target_id] = (counts[f.target_id] || 0) + 1
+    }
+    return counts
+  }, [findings])
+
+  // Findings carry a numeric target_id, not an address — resolve the real
+  // contract address from the scan's target list for display.
+  const addrByTarget = useMemo(() => {
+    const rows: Record<string, string> = {}
+    for (const t of activeTargets) rows[t.id] = t.address
+    return rows
+  }, [activeTargets])
+
+  const targetById = useMemo(() => {
+    const rows: Record<string, Target> = {}
+    for (const t of activeTargets) rows[t.id] = t
+    return rows
+  }, [activeTargets])
+
+  const sortedTargets = useMemo(() => {
+    const q = textValue(targetQuery)
+    const rows = activeTargets.filter((t) => {
+      if (!q) return true
+      return [
+        t.address,
+        t.label,
+        t.contract_name,
+        t.status,
+        t.proxy_type,
+      ].some((v) => textValue(v).includes(q))
+    })
+    const dir = targetSortDir === 'asc' ? 1 : -1
+    return [...rows].sort((a, b) => {
+      let av: string | number = ''
+      let bv: string | number = ''
+      if (targetSort === 'address') {
+        av = a.address
+        bv = b.address
+      } else if (targetSort === 'status') {
+        av = a.status
+        bv = b.status
+      } else if (targetSort === 'proxy') {
+        av = a.proxy_type || (a.is_proxy ? 'proxy' : '')
+        bv = b.proxy_type || (b.is_proxy ? 'proxy' : '')
+      } else {
+        av = findingsByTarget[a.id] || 0
+        bv = findingsByTarget[b.id] || 0
+      }
+      if (typeof av === 'number' && typeof bv === 'number') {
+        return (av - bv) * dir
+      }
+      return String(av).localeCompare(String(bv)) * dir
+    })
+  }, [activeTargets, targetQuery, targetSort, targetSortDir, findingsByTarget])
+
+  const detectorOptions = useMemo(
+    () => Array.from(new Set(findings.map((f) => f.detector))).sort(),
+    [findings],
+  )
+  const classificationOptions = useMemo(
+    () => Array.from(new Set(findings.map((f) => f.classification))).sort(),
+    [findings],
+  )
+  const statusOptions = useMemo(
+    () => Array.from(new Set(findings.map((f) => f.status))).sort(),
+    [findings],
+  )
+
+  const filteredFindings = useMemo(() => {
+    const q = textValue(findingQuery)
+    const rows = findings.filter((f) => {
+      const address = addrByTarget[f.target_id] ?? ''
+      const target = targetById[f.target_id]
+      if (contractFilter !== 'all' && f.target_id !== contractFilter) return false
+      if (detectorFilter !== 'all' && f.detector !== detectorFilter) return false
+      if (classificationFilter !== 'all' && f.classification !== classificationFilter) return false
+      if (statusFilter !== 'all' && f.status !== statusFilter) return false
+      if (hideFalsePositives && f.classification === 'FALSE_POSITIVE') return false
+      if (!q) return true
+      return [
+        address,
+        target?.contract_name,
+        target?.label,
+        f.detector,
+        f.title,
+        f.classification,
+        f.status,
+        firstNextTest(f),
+      ].some((v) => textValue(v).includes(q))
+    })
+
+    const dir = findingSortDir === 'asc' ? 1 : -1
+    return [...rows].sort((a, b) => {
+      let av: string | number = ''
+      let bv: string | number = ''
+      if (findingSort === 'impact') {
+        av = a.impact_score ?? -1
+        bv = b.impact_score ?? -1
+      } else if (findingSort === 'confidence') {
+        av = a.confidence_score ?? -1
+        bv = b.confidence_score ?? -1
+      } else if (findingSort === 'address') {
+        av = addrByTarget[a.target_id] ?? ''
+        bv = addrByTarget[b.target_id] ?? ''
+      } else if (findingSort === 'detector') {
+        av = a.detector
+        bv = b.detector
+      } else if (findingSort === 'classification') {
+        av = a.classification
+        bv = b.classification
+      } else if (findingSort === 'status') {
+        av = a.status
+        bv = b.status
+      } else {
+        av = a.title
+        bv = b.title
+      }
+      if (typeof av === 'number' && typeof bv === 'number') {
+        return (av - bv) * dir
+      }
+      return String(av).localeCompare(String(bv)) * dir
+    })
+  }, [
+    findings,
+    findingQuery,
+    contractFilter,
+    detectorFilter,
+    classificationFilter,
+    statusFilter,
+    hideFalsePositives,
+    findingSort,
+    findingSortDir,
+    addrByTarget,
+    targetById,
+  ])
+
   if (loading) return <Spinner label="Loading scan…" />
   if (error && !scan) return <ErrorBox message={error} />
   if (!scan) return <ErrorBox message="Scan not found." />
@@ -167,15 +368,34 @@ export default function ScanDetail() {
       : 0
   const isRunning = scan.status === 'running' || scan.status === 'queued'
 
-  const findingsByTarget: Record<string, number> = {}
-  for (const f of findings) {
-    findingsByTarget[f.target_id] = (findingsByTarget[f.target_id] || 0) + 1
+  function setTargetSortColumn(key: TargetSortKey) {
+    if (targetSort === key) {
+      setTargetSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
+    } else {
+      setTargetSort(key)
+      setTargetSortDir(key === 'findings' ? 'desc' : 'asc')
+    }
   }
 
-  // Findings carry a numeric target_id, not an address — resolve the real
-  // contract address from the scan's target list for display.
-  const addrByTarget: Record<string, string> = {}
-  for (const t of scan.targets) addrByTarget[t.id] = t.address
+  function setFindingSortColumn(key: FindingSortKey) {
+    if (findingSort === key) {
+      setFindingSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
+    } else {
+      setFindingSort(key)
+      setFindingSortDir(key === 'impact' || key === 'confidence' ? 'desc' : 'asc')
+    }
+  }
+
+  function resetFindingFilters() {
+    setFindingQuery('')
+    setContractFilter('all')
+    setDetectorFilter('all')
+    setClassificationFilter('all')
+    setStatusFilter('all')
+    setHideFalsePositives(false)
+    setFindingSort('impact')
+    setFindingSortDir('desc')
+  }
 
   const exportBtn = (fmt: 'json' | 'csv' | 'md' | 'zip', label: string) => (
     <a
@@ -284,25 +504,66 @@ export default function ScanDetail() {
       </div>
 
       {/* Targets */}
-      <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-400">
-        Targets ({scan.targets.length})
-      </h2>
+      <div className="mb-2 flex items-center justify-between gap-3 flex-wrap">
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-400">
+          Targets ({sortedTargets.length} / {activeTargets.length})
+        </h2>
+        <input
+          className="input max-w-xs"
+          value={targetQuery}
+          onChange={(e) => setTargetQuery(e.target.value)}
+          placeholder="Filter contracts"
+        />
+      </div>
       <div className="card mb-8 overflow-hidden">
         <table className="w-full">
           <thead className="border-b border-slate-800 bg-slate-900/80">
             <tr>
-              <th className="th">Address</th>
-              <th className="th">Status</th>
-              <th className="th">Proxy</th>
-              <th className="th">Findings</th>
+              <th className="th">
+                <SortButton
+                  label="Address"
+                  active={targetSort === 'address'}
+                  dir={targetSortDir}
+                  onClick={() => setTargetSortColumn('address')}
+                />
+              </th>
+              <th className="th">
+                <SortButton
+                  label="Status"
+                  active={targetSort === 'status'}
+                  dir={targetSortDir}
+                  onClick={() => setTargetSortColumn('status')}
+                />
+              </th>
+              <th className="th">
+                <SortButton
+                  label="Proxy"
+                  active={targetSort === 'proxy'}
+                  dir={targetSortDir}
+                  onClick={() => setTargetSortColumn('proxy')}
+                />
+              </th>
+              <th className="th">
+                <SortButton
+                  label="Findings"
+                  active={targetSort === 'findings'}
+                  dir={targetSortDir}
+                  onClick={() => setTargetSortColumn('findings')}
+                />
+              </th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-800">
-            {scan.targets.map((t) => (
-              <tr key={t.id} className="hover:bg-slate-800/40">
+            {sortedTargets.map((t) => (
+              <tr
+                key={t.id}
+                className="hover:bg-slate-800/40 cursor-pointer focus-within:bg-slate-800/40"
+                onClick={() => navigate(`/targets/${t.id}`)}
+              >
                 <td className="td">
                   <Link
                     to={`/targets/${t.id}`}
+                    onClick={(e) => e.stopPropagation()}
                     className="font-mono text-emerald-400 hover:underline"
                   >
                     {shortAddr(t.address)}
@@ -327,10 +588,10 @@ export default function ScanDetail() {
                 <td className="td">{findingsByTarget[t.id] || 0}</td>
               </tr>
             ))}
-            {scan.targets.length === 0 && (
+            {sortedTargets.length === 0 && (
               <tr>
                 <td className="td text-slate-500" colSpan={4}>
-                  No targets.
+                  No matching contracts.
                 </td>
               </tr>
             )}
@@ -339,34 +600,192 @@ export default function ScanDetail() {
       </div>
 
       {/* Findings */}
-      <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-400">
-        Findings ({findings.length})
-      </h2>
+      <div className="mb-2 flex items-center justify-between gap-3 flex-wrap">
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-400">
+          Findings ({filteredFindings.length} / {findings.length})
+        </h2>
+        <button className="btn-secondary py-1.5 text-xs" onClick={resetFindingFilters}>
+          Reset filters
+        </button>
+      </div>
       {findings.length === 0 ? (
         <EmptyState>
           No findings yet{isRunning ? ' — scan still running.' : '.'}
         </EmptyState>
       ) : (
-        <div className="card overflow-x-auto">
-          <table className="w-full min-w-[900px]">
+        <div className="space-y-3">
+          <div className="card p-3">
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
+              <div className="xl:col-span-2">
+                <label className="label" htmlFor="finding-search">
+                  Search
+                </label>
+                <input
+                  id="finding-search"
+                  className="input"
+                  value={findingQuery}
+                  onChange={(e) => setFindingQuery(e.target.value)}
+                  placeholder="Title, detector, contract, next test"
+                />
+              </div>
+              <div>
+                <label className="label" htmlFor="contract-filter">
+                  Contract
+                </label>
+                <select
+                  id="contract-filter"
+                  className="input"
+                  value={contractFilter}
+                  onChange={(e) => setContractFilter(e.target.value)}
+                >
+                  <option value="all">All contracts</option>
+                  {activeTargets.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.contract_name || t.label || shortAddr(t.address)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="label" htmlFor="detector-filter">
+                  Detector
+                </label>
+                <select
+                  id="detector-filter"
+                  className="input"
+                  value={detectorFilter}
+                  onChange={(e) => setDetectorFilter(e.target.value)}
+                >
+                  <option value="all">All detectors</option>
+                  {detectorOptions.map((d) => (
+                    <option key={d} value={d}>
+                      {d}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="label" htmlFor="classification-filter">
+                  Classification
+                </label>
+                <select
+                  id="classification-filter"
+                  className="input"
+                  value={classificationFilter}
+                  onChange={(e) => setClassificationFilter(e.target.value)}
+                >
+                  <option value="all">All classifications</option>
+                  {classificationOptions.map((c) => (
+                    <option key={c} value={c}>
+                      {optionLabel(c)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="label" htmlFor="status-filter">
+                  Status
+                </label>
+                <select
+                  id="status-filter"
+                  className="input"
+                  value={statusFilter}
+                  onChange={(e) => setStatusFilter(e.target.value)}
+                >
+                  <option value="all">All statuses</option>
+                  {statusOptions.map((s) => (
+                    <option key={s} value={s}>
+                      {optionLabel(s)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            <label className="mt-3 inline-flex items-center gap-2 text-sm text-slate-300">
+              <input
+                type="checkbox"
+                className="h-4 w-4 rounded border-slate-700 bg-slate-950 text-emerald-500 focus:ring-emerald-600"
+                checked={hideFalsePositives}
+                onChange={(e) => setHideFalsePositives(e.target.checked)}
+              />
+              Hide AI false positives
+            </label>
+          </div>
+
+          <div className="card overflow-x-auto">
+            <table className="w-full min-w-[980px]">
             <thead className="border-b border-slate-800 bg-slate-900/80">
               <tr>
-                <th className="th">Address</th>
-                <th className="th">Detector</th>
-                <th className="th">Title</th>
-                <th className="th">Impact</th>
-                <th className="th">Conf.</th>
-                <th className="th">AI Classification</th>
-                <th className="th">Status</th>
+                <th className="th">
+                  <SortButton
+                    label="Address"
+                    active={findingSort === 'address'}
+                    dir={findingSortDir}
+                    onClick={() => setFindingSortColumn('address')}
+                  />
+                </th>
+                <th className="th">
+                  <SortButton
+                    label="Detector"
+                    active={findingSort === 'detector'}
+                    dir={findingSortDir}
+                    onClick={() => setFindingSortColumn('detector')}
+                  />
+                </th>
+                <th className="th">
+                  <SortButton
+                    label="Title"
+                    active={findingSort === 'title'}
+                    dir={findingSortDir}
+                    onClick={() => setFindingSortColumn('title')}
+                  />
+                </th>
+                <th className="th">
+                  <SortButton
+                    label="Impact"
+                    active={findingSort === 'impact'}
+                    dir={findingSortDir}
+                    onClick={() => setFindingSortColumn('impact')}
+                  />
+                </th>
+                <th className="th">
+                  <SortButton
+                    label="Conf."
+                    active={findingSort === 'confidence'}
+                    dir={findingSortDir}
+                    onClick={() => setFindingSortColumn('confidence')}
+                  />
+                </th>
+                <th className="th">
+                  <SortButton
+                    label="AI Classification"
+                    active={findingSort === 'classification'}
+                    dir={findingSortDir}
+                    onClick={() => setFindingSortColumn('classification')}
+                  />
+                </th>
+                <th className="th">
+                  <SortButton
+                    label="Status"
+                    active={findingSort === 'status'}
+                    dir={findingSortDir}
+                    onClick={() => setFindingSortColumn('status')}
+                  />
+                </th>
                 <th className="th">Next Test</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800">
-              {findings.map((f) => (
-                <tr key={f.id} className="hover:bg-slate-800/40">
+              {filteredFindings.map((f) => (
+                <tr
+                  key={f.id}
+                  className="hover:bg-slate-800/40 cursor-pointer"
+                  onClick={() => navigate(`/findings/${f.id}`)}
+                >
                   <td className="td">
                     <Link
                       to={`/targets/${f.target_id}`}
+                      onClick={(e) => e.stopPropagation()}
                       className="font-mono text-xs text-emerald-400 hover:underline"
                     >
                       {shortAddr(addrByTarget[f.target_id] ?? `#${f.target_id}`)}
@@ -378,6 +797,7 @@ export default function ScanDetail() {
                   <td className="td">
                     <Link
                       to={`/findings/${f.id}`}
+                      onClick={(e) => e.stopPropagation()}
                       className="text-slate-100 hover:text-emerald-400 hover:underline"
                     >
                       {f.title}
@@ -398,8 +818,16 @@ export default function ScanDetail() {
                   </td>
                 </tr>
               ))}
+              {filteredFindings.length === 0 && (
+                <tr>
+                  <td className="td text-slate-500" colSpan={8}>
+                    No findings match the current filters.
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
+          </div>
         </div>
       )}
     </div>
