@@ -91,7 +91,11 @@ def _suppression_reason(
     if ctx.source_files and not matches and fn not in abi_names:
         return f"function `{fn}` is absent from the target source and ABI"
 
-    if matches and all(_is_internal_only(e.tail) for e in matches):
+    if (
+        matches
+        and all(_is_internal_only(e.tail) for e in matches)
+        and not _keep_internal_helper_lead(cand)
+    ):
         return f"function `{fn}` is internal/private in the verified target source"
 
     if (
@@ -158,6 +162,48 @@ def _candidate_function(cand: FindingCandidate) -> str:
 
 def _is_internal_only(tail: str) -> bool:
     return bool(re.search(r"\b(internal|private)\b", tail or ""))
+
+
+def _keep_internal_helper_lead(cand: FindingCandidate) -> bool:
+    """Do not suppress Aztec-style settlement/proof leads on helper visibility.
+
+    The vulnerable variable is often decoded in an internal helper and consumed
+    by a public entrypoint. Internal/private only proves users cannot call the
+    helper directly; it does not prove the proof-boundary or settlement-count
+    invariant is safe. A concrete binding check should refute these later.
+    """
+    ev = cand.evidence or {}
+    if not (ev.get("lead_only") or ev.get("onchain_detectable") == "lead_only"):
+        return False
+    blob = " ".join(
+        str(x or "")
+        for x in (
+            cand.detector,
+            cand.title,
+            cand.description,
+            ev.get("bug_class"),
+            ev.get("pattern"),
+            ev.get("source"),
+        )
+    ).lower()
+    return bool(
+        cand.detector in {"zk_verifier", "invariant_reasoner"}
+        or any(
+            marker in blob
+            for marker in (
+                "proof",
+                "settlement",
+                "numtx",
+                "num_tx",
+                "rollup",
+                "public input",
+                "nullifier",
+                "merkle",
+                "root",
+                "withdraw",
+            )
+        )
+    )
 
 
 def _read_initialized(ctx: TargetContext) -> bool | None:

@@ -274,10 +274,14 @@ async def process_target(
     source_files: dict[str, str] = dict(pkg.source_files)
     contract_name = pkg.contract_name
     solc_version = pkg.solc_version
+    evm_version = pkg.evm_version
+    optimizer_enabled = pkg.optimization_used
+    optimizer_runs = pkg.optimization_runs
 
     # --- Bytecode + proxy resolution -------------------------------------- #
     _set_target_status(scan_id, target_id, TargetStatus.RESOLVING)
     bytecode = await asyncio.to_thread(onchain.get_code, address)
+    tool_bytecode = bytecode
     balance = await asyncio.to_thread(onchain.get_balance_eth, address)
     proxy_info = await asyncio.to_thread(
         resolve_proxy, onchain, address, pkg.abi, pkg.implementation
@@ -294,9 +298,17 @@ async def process_target(
             write_source_to_workspace(impl_dir, impl_pkg)
             for relp, content in impl_pkg.source_files.items():
                 source_files[f"_implementation/{relp}"] = content
-            if impl_pkg.contract_name:
-                contract_name = contract_name or impl_pkg.contract_name
-            solc_version = solc_version or impl_pkg.solc_version
+            if impl_pkg.verified:
+                if impl_pkg.contract_name:
+                    contract_name = impl_pkg.contract_name
+                solc_version = impl_pkg.solc_version or solc_version
+                evm_version = impl_pkg.evm_version or evm_version
+                optimizer_enabled = impl_pkg.optimization_used
+                optimizer_runs = impl_pkg.optimization_runs or optimizer_runs
+                try:
+                    tool_bytecode = await asyncio.to_thread(onchain.get_code, proxy_info.implementation)
+                except Exception as exc:  # pragma: no cover - network defensive
+                    logger.warning("implementation bytecode fetch failed for %s: %s", address, exc)
         except Exception as exc:
             logger.warning("impl source fetch failed for %s: %s", address, exc)
 
@@ -337,22 +349,30 @@ async def process_target(
     _set_target_status(scan_id, target_id, TargetStatus.TOOLS)
     tool_outputs: dict = {}
     have_source = bool(source_files)
-    main_source = _pick_main_source(workspace["source"], contract_name) if have_source else None
+    prefer_impl = bool(impl_pkg and impl_pkg.verified and proxy_info.implementation)
+    main_source = (
+        _pick_main_source(workspace["source"], contract_name, prefer_implementation=prefer_impl)
+        if have_source
+        else None
+    )
 
     if _toggle(toggles, "slither", s.enable_slither):
         await _run_tool(
             scan_id, target_id, "slither", tool_outputs, workspace,
-            have_source, main_source, bytecode, solc_version,
+            have_source, main_source, tool_bytecode, solc_version,
+            evm_version, optimizer_enabled, optimizer_runs,
         )
     if _toggle(toggles, "semgrep", s.enable_semgrep):
         await _run_tool(
             scan_id, target_id, "semgrep", tool_outputs, workspace,
-            have_source, main_source, bytecode, solc_version,
+            have_source, main_source, tool_bytecode, solc_version,
+            evm_version, optimizer_enabled, optimizer_runs,
         )
     if _toggle(toggles, "mythril", s.enable_mythril):
         await _run_tool(
             scan_id, target_id, "mythril", tool_outputs, workspace,
-            have_source, main_source, bytecode, solc_version,
+            have_source, main_source, tool_bytecode, solc_version,
+            evm_version, optimizer_enabled, optimizer_runs,
         )
 
     # --- Detectors --------------------------------------------------------- #
@@ -789,10 +809,17 @@ def _combine_abis(*abis):
     return out or None
 
 
-def _pick_main_source(source_dir: Path, contract_name: str | None) -> Path | None:
-    sols = [p for p in source_dir.rglob("*.sol") if "_implementation" not in p.parts] or list(
-        source_dir.rglob("*.sol")
-    )
+def _pick_main_source(
+    source_dir: Path,
+    contract_name: str | None,
+    *,
+    prefer_implementation: bool = False,
+) -> Path | None:
+    all_sols = list(source_dir.rglob("*.sol"))
+    if prefer_implementation:
+        sols = [p for p in all_sols if "_implementation" in p.parts] or all_sols
+    else:
+        sols = [p for p in all_sols if "_implementation" not in p.parts] or all_sols
     if not sols:
         return None
     if contract_name:
@@ -804,7 +831,8 @@ def _pick_main_source(source_dir: Path, contract_name: str | None) -> Path | Non
 
 
 async def _run_tool(
-    scan_id, target_id, tool, tool_outputs, workspace, have_source, main_source, bytecode, solc_version
+    scan_id, target_id, tool, tool_outputs, workspace, have_source, main_source,
+    bytecode, solc_version, evm_version=None, optimizer_enabled=None, optimizer_runs=None,
 ) -> None:
     from ..runners.mythril_runner import run_mythril
     from ..runners.semgrep_runner import run_semgrep
@@ -821,7 +849,12 @@ async def _run_tool(
             else:
                 res = await asyncio.to_thread(
                     run_slither, workspace["source"], workspace["slither"],
-                    solc_version=solc_version, timeout=s.slither_timeout,
+                    main_source=main_source,
+                    solc_version=solc_version,
+                    evm_version=evm_version,
+                    optimizer_enabled=optimizer_enabled,
+                    optimizer_runs=optimizer_runs,
+                    timeout=s.slither_timeout,
                 )
         elif tool == "semgrep":
             if not have_source:

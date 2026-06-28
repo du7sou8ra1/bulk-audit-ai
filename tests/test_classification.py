@@ -14,7 +14,9 @@ EXPECTED state, not a refutation. These tests pin the corrected behaviour:
 Run: PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest tests/test_classification.py -q
 """
 from backend.core.scoring import mark_corroboration, score_finding
+from backend.core.candidate_sanity import apply_candidate_sanity
 from backend.detectors.base import FindingCandidate
+from backend.detectors.base import TargetContext
 from backend.models import Classification
 
 
@@ -128,3 +130,68 @@ def test_confirmable_refuted_with_control_drops():
     # If the skeptic cited a concrete on-chain control, refuted is set and it caps.
     r = score_finding(_confirmable(refuted=True))
     assert r.confidence_score <= 2.0
+
+
+def test_aztec_style_internal_helper_lead_is_not_suppressed():
+    source = """
+    contract RollupProcessor {
+        function processRollup(bytes calldata proofData) external {
+            uint256 numTxs = decodeProof(proofData);
+            processDepositsAndWithdrawals(proofData, numTxs);
+        }
+        function decodeProof(bytes calldata proofData) internal returns (uint256) {
+            return uint256(uint8(proofData[0]));
+        }
+        function processDepositsAndWithdrawals(bytes calldata proofData, uint256 numTxs) internal {
+            for (uint256 i = 0; i < numTxs; i++) {}
+        }
+    }
+    """
+    ctx = TargetContext(
+        address="0x0",
+        chain="ethereum",
+        profile="ultra-deep-v2",
+        onchain=None,
+        proxy_info=None,
+        workspace=None,
+        contract_name="RollupProcessor",
+        source_files={"RollupProcessor.sol": source},
+        abi=[{"type": "function", "name": "processRollup", "inputs": []}],
+    )
+    lead = _lead(fn="processDepositsAndWithdrawals")
+    suppressed = apply_candidate_sanity(ctx, [lead])
+    assert suppressed == 0
+    assert not lead.evidence.get("suppressed")
+    assert not lead.evidence.get("refuted")
+
+
+def test_plain_internal_helper_noise_is_still_suppressed():
+    source = """
+    contract C {
+        function publicEntry() external { helper(); }
+        function helper() internal {}
+    }
+    """
+    ctx = TargetContext(
+        address="0x0",
+        chain="ethereum",
+        profile="deep",
+        onchain=None,
+        proxy_info=None,
+        workspace=None,
+        contract_name="C",
+        source_files={"C.sol": source},
+        abi=[{"type": "function", "name": "publicEntry", "inputs": []}],
+    )
+    cand = FindingCandidate(
+        detector="access_control",
+        title="helper is unguarded",
+        description="noise",
+        impact_score=7,
+        confidence_score=5,
+        evidence={},
+        affected_functions=["helper"],
+    )
+    suppressed = apply_candidate_sanity(ctx, [cand])
+    assert suppressed == 1
+    assert cand.evidence.get("suppressed")

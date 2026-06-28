@@ -1,8 +1,9 @@
 """Mythril runner.
 
-Analyzes the primary contract source file (or bytecode) with a hard timeout.
-Mythril is slow, so the runner targets the main contract only and respects the
-configured execution timeout. Output is normalized into evidence.
+Analyzes the primary contract source file, then falls back to runtime bytecode if
+source compilation fails. Mythril can return exit code 0 with JSON
+``success:false`` when solc resolution fails, so the JSON success flag is treated
+as authoritative.
 """
 from __future__ import annotations
 
@@ -67,47 +68,144 @@ def run_mythril(
         return RunnerResult.skipped("mythril", "mythril not installed (pip install mythril)")
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    # execution-timeout must be shorter than our process timeout.
     exec_timeout = max(30, timeout - 30)
 
-    args = [exe, "analyze", "-o", "json", "--execution-timeout", str(exec_timeout)]
-    target_desc = ""
     if main_source and main_source.exists():
-        args.append(str(main_source))
-        if solc_version:
-            args += ["--solv", solc_version]
-        target_desc = main_source.name
-    elif bytecode:
-        bc_file = out_dir / "runtime.hex"
-        bc_file.write_text(bytecode, encoding="utf-8")
-        args += ["--codefile", str(bc_file)]
-        target_desc = "runtime bytecode"
-    else:
-        return RunnerResult.skipped("mythril", "no source file or bytecode to analyze")
+        source_res, source_json = _run_source(
+            exe,
+            main_source,
+            out_dir,
+            solc_version=solc_version,
+            exec_timeout=exec_timeout,
+            timeout=timeout,
+        )
+        if _parsed_success(source_json):
+            return _finish(source_res, source_json, main_source.name)
+        if not source_res.timed_out and bytecode:
+            bytecode_res, bytecode_json = _run_bytecode(
+                exe,
+                bytecode,
+                out_dir,
+                exec_timeout=exec_timeout,
+                timeout=timeout,
+            )
+            if _parsed_success(bytecode_json):
+                finished = _finish(bytecode_res, bytecode_json, "runtime bytecode")
+                finished.summary = "source compile failed; bytecode fallback: " + finished.summary
+                return finished
+            fallback = _finish(bytecode_res, bytecode_json, "runtime bytecode")
+            fallback.summary = "source compile failed; bytecode fallback: " + fallback.summary
+            return fallback
+        return _finish(source_res, source_json, main_source.name)
 
-    cmd = run_command(args, timeout=timeout, output_dir=out_dir, output_prefix="mythril")
+    if bytecode:
+        bytecode_res, bytecode_json = _run_bytecode(
+            exe,
+            bytecode,
+            out_dir,
+            exec_timeout=exec_timeout,
+            timeout=timeout,
+        )
+        return _finish(bytecode_res, bytecode_json, "runtime bytecode")
+
+    return RunnerResult.skipped("mythril", "no source file or bytecode to analyze")
+
+
+def _run_source(
+    exe: str,
+    main_source: Path,
+    out_dir: Path,
+    *,
+    solc_version: str | None,
+    exec_timeout: int,
+    timeout: int,
+) -> tuple[RunnerResult, dict | None]:
+    args = [
+        exe,
+        "analyze",
+        "-o",
+        "json",
+        "--execution-timeout",
+        str(exec_timeout),
+        str(main_source),
+    ]
+    if solc_version:
+        args += ["--solv", solc_version]
+    cmd = run_command(args, timeout=timeout, output_dir=out_dir, output_prefix="mythril_source")
     result = RunnerResult.from_command("mythril", cmd)
+    parsed = _parse_stdout(cmd.stdout, out_dir / "mythril_source.json", result)
+    return result, parsed
 
-    # Mythril prints JSON to stdout.
-    json_out = out_dir / "mythril.json"
+
+def _run_bytecode(
+    exe: str,
+    bytecode: str,
+    out_dir: Path,
+    *,
+    exec_timeout: int,
+    timeout: int,
+) -> tuple[RunnerResult, dict | None]:
+    bc_file = out_dir / "runtime.hex"
+    clean_bytecode = (bytecode or "").strip()
+    if clean_bytecode.startswith("0x"):
+        clean_bytecode = clean_bytecode[2:]
+    bc_file.write_text(clean_bytecode, encoding="utf-8")
+    args = [
+        exe,
+        "analyze",
+        "-o",
+        "json",
+        "--execution-timeout",
+        str(exec_timeout),
+        "--codefile",
+        str(bc_file),
+        "--bin-runtime",
+    ]
+    cmd = run_command(args, timeout=timeout, output_dir=out_dir, output_prefix="mythril_bytecode")
+    result = RunnerResult.from_command("mythril", cmd)
+    parsed = _parse_stdout(cmd.stdout, out_dir / "mythril_bytecode.json", result)
+    return result, parsed
+
+
+def _parse_stdout(stdout: str, json_out: Path, result: RunnerResult) -> dict | None:
     parsed: dict | None = None
-    if cmd.stdout.strip():
+    if stdout.strip():
         try:
-            parsed = json.loads(cmd.stdout)
-            json_out.write_text(cmd.stdout, encoding="utf-8")
+            parsed = json.loads(stdout)
+            json_out.write_text(stdout, encoding="utf-8")
             result.json_output_path = str(json_out)
         except json.JSONDecodeError:
             logger.debug("mythril stdout was not valid JSON")
+    return parsed
 
+
+def _finish(result: RunnerResult, parsed: dict | None, target_desc: str) -> RunnerResult:
     if parsed is not None:
         result.findings = _normalize(parsed)
-        if result.status == "failed" and parsed.get("success"):
+        if parsed.get("success") is False:
+            result.status = "failed"
+            result.summary = f"mythril failed on {target_desc}: {_error_text(parsed)}"
+            return result
+        if parsed.get("success") is True:
             result.status = "ok"
 
-    high = [f for f in result.findings if f.get("high_value")]
-    result.summary = (
-        f"{len(result.findings)} issues on {target_desc} ({len(high)} high-value)"
-        if result.status in ("ok",)
-        else f"mythril {result.status} on {target_desc}"
-    )
+    if result.status == "ok":
+        result.summary = _summary(parsed, target_desc)
+    else:
+        result.summary = f"mythril {result.status} on {target_desc}"
     return result
+
+
+def _summary(parsed: dict | None, target_desc: str) -> str:
+    findings = _normalize(parsed or {})
+    high = [f for f in findings if f.get("high_value")]
+    return f"{len(findings)} issues on {target_desc} ({len(high)} high-value)"
+
+
+def _parsed_success(parsed: dict | None) -> bool:
+    return bool(parsed is not None and parsed.get("success") is True)
+
+
+def _error_text(parsed: dict) -> str:
+    error = str(parsed.get("error") or parsed.get("message") or "analysis did not succeed")
+    return error.replace("\n", " ")[:300]

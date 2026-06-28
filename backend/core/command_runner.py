@@ -17,6 +17,7 @@ import subprocess
 import time
 from dataclasses import dataclass, field
 from os import environ
+import os
 from pathlib import Path
 
 
@@ -41,21 +42,62 @@ class CommandResult:
 
 def which(executable: str) -> str | None:
     """Resolve an executable on PATH plus common per-user tool locations."""
-    resolved = shutil.which(executable)
-    if resolved:
-        return resolved
-
     home = Path(environ.get("HOME") or "~").expanduser()
     extra_dirs = [
         home / ".foundry" / "bin",
         Path("/home/deploy/.foundry/bin"),
         home / ".local" / "bin",
+        Path("/home/deploy/.local/bin"),
     ]
     for directory in extra_dirs:
         candidate = directory / executable
         if candidate.exists() and candidate.is_file():
             return str(candidate)
+    resolved = shutil.which(executable)
+    if resolved:
+        return resolved
     return None
+
+
+def _tool_path_dirs() -> list[str]:
+    """Common per-user tool locations used by Foundry, Mythril and pipx/pip."""
+    home = Path(environ.get("HOME") or "~").expanduser()
+    candidates = [
+        home / ".foundry" / "bin",
+        Path("/home/deploy/.foundry/bin"),
+        home / ".local" / "bin",
+        Path("/home/deploy/.local/bin"),
+    ]
+    out: list[str] = []
+    seen: set[str] = set()
+    for directory in candidates:
+        try:
+            value = str(directory)
+        except OSError:
+            continue
+        if value not in seen and directory.exists():
+            seen.add(value)
+            out.append(value)
+    return out
+
+
+def default_env(extra: dict | None = None) -> dict:
+    """Return a subprocess env that preserves service env + user tool PATHs.
+
+    ``systemd`` often starts the API with a minimal PATH. Resolving the top-level
+    executable is not enough: Slither can spawn ``forge``/``solc`` and Mythril can
+    spawn helpers. This keeps child tools visible without requiring users to edit
+    the service file every time a security tool is installed under ~/.local.
+    """
+    env = os.environ.copy()
+    path_parts = _tool_path_dirs()
+    existing_path = env.get("PATH") or ""
+    if existing_path:
+        path_parts.append(existing_path)
+    env["PATH"] = os.pathsep.join(path_parts)
+    if extra:
+        env.update({str(k): str(v) for k, v in extra.items()})
+    return env
 
 
 def run_command(
@@ -100,7 +142,7 @@ def run_command(
             capture_output=True,
             text=True,
             timeout=timeout,
-            env=env,
+            env=default_env(env),
             check=False,
         )
         stdout = proc.stdout or ""
