@@ -74,3 +74,93 @@ rules:
       include: ["*.sol"]
     patterns:
       - pattern-regex: "function\\s+(withdraw|claim|redeem|rescue|sweep)\\w*\\s*\\([^)]*address[^)]*\\)"
+
+  - id: solidity-transferfrom-no-balance-delta
+    languages: [generic]
+    severity: WARNING
+    message: "transferFrom deposit path may account nominal amount without measuring received balance delta."
+    paths:
+      include: ["*.sol"]
+    patterns:
+      - pattern-regex: '(?s)transferFrom\s*\([^;]+\).*(_mint\s*\(|shares\s*=|balances?\s*\[)'
+
+  - id: solidity-merkle-claim-weak-binding
+    languages: [generic]
+    severity: WARNING
+    message: "Merkle claim path moves value; verify leaf binds recipient, amount, token/domain, and nonce/index."
+    paths:
+      include: ["*.sol"]
+    patterns:
+      - pattern-regex: '(?s)(MerkleProof|merkle).*keccak256\s*\(.*(transfer|safeTransfer|_mint|claim)'
+
+  - id: solidity-bitmap-claim-shift-without-word-index
+    languages: [generic]
+    severity: WARNING
+    message: "Claim bitmap shift uses a raw index; verify modulo/word-index handling prevents aliasing."
+    paths:
+      include: ["*.sol"]
+    patterns:
+      - pattern-regex: '(claimed|bitmap|bitMap|claimedBitMap)[\s\S]{0,500}1\s*<<\s*(index|idx|i)\b'
+
+  - id: solidity-bridge-message-key
+    languages: [generic]
+    severity: WARNING
+    message: "Bridge/message processed-key path; verify replay key binds source chain, sender, nonce, and destination."
+    paths:
+      include: ["*.sol"]
+    patterns:
+      - pattern-regex: '(?s)(processed|consumed|executed|used)\s*\[[^\]]+\]\s*=\s*true.*keccak256\s*\(\s*abi\.encode'
+
+  - id: solidity-chainlink-latest-round-data
+    languages: [generic]
+    severity: WARNING
+    message: "Chainlink latestRoundData used; verify updatedAt, answeredInRound, positive answer, and L2 sequencer checks."
+    paths:
+      include: ["*.sol"]
+    patterns:
+      - pattern-regex: 'latestRoundData\s*\('
+
+  - id: solidity-address-this-balance-accounting
+    languages: [generic]
+    severity: WARNING
+    message: "address(this).balance used in accounting; forced ETH can skew share/reward/solvency math."
+    paths:
+      include: ["*.sol"]
+    patterns:
+      - pattern-regex: 'address\s*\(\s*this\s*\)\.balance'
+
+  - id: solidity-payable-multicall-delegatecall
+    languages: [generic]
+    severity: ERROR
+    message: "Payable multicall/delegatecall path; verify msg.value/cached-state cannot be reused across inner calls."
+    paths:
+      include: ["*.sol"]
+    patterns:
+      - pattern-regex: '(?s)function\s+\w*(multicall|batch)\w*\s*\([^)]*\)[^{;]*payable[\s\S]{0,1200}delegatecall\s*\('
+
+  - id: solidity-trycatch-swallowed-finalization
+    languages: [generic]
+    severity: WARNING
+    message: "try/catch finalization path; verify failed external execution is not marked consumed/finalized."
+    paths:
+      include: ["*.sol"]
+    patterns:
+      - pattern-regex: '(?s)(processed|consumed|executed|claimed|used)\s*\[[^\]]+\]\s*=\s*true[\s\S]{0,800}try\s+[^{}]+\{[\s\S]{0,800}catch\s*(\([^)]*\))?\s*\{'
+
+  - id: solidity-batch-loop-value-mutation
+    languages: [generic]
+    severity: WARNING
+    message: "Batch loop mutates/transfers value; verify duplicate ids/items are rejected or deduplicated."
+    paths:
+      include: ["*.sol"]
+    patterns:
+      - pattern-regex: '(?s)function\s+\w*(batch|multi|claim|execute|withdraw)\w*\s*\([^)]*\[\][^)]*\)[^{;]*\{[\s\S]{0,1400}for\s*\([\s\S]{0,1400}(transfer|safeTransfer|_mint|_burn|\+=|-=)'
+
+  - id: solidity-create2-address-only-trust
+    languages: [generic]
+    severity: WARNING
+    message: "CREATE2/code-existence trust path; verify expected runtime code hash is bound, not only address/code length."
+    paths:
+      include: ["*.sol"]
+    patterns:
+      - pattern-regex: '(?s)(create2|CREATE2|salt|extcodesize|\.code\.length)[\s\S]{0,800}(allow|trust|whitelist|implementation|module|adapter|strategy|target)'

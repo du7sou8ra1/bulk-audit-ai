@@ -34,6 +34,7 @@ from .base import (
     iter_function_bodies,
     strip_comments,
 )
+from ..core.semantic_index import build_semantic_index
 
 COVERAGE_STATEMENT = (
     "Detects ZK-verifier INTEGRATION flaws visible in Solidity text (no AST, no "
@@ -250,9 +251,78 @@ class ZkVerifierDetector(Detector):
                 findings += self._function_rules(name, params, tail, body, s, path)
             findings += self._file_rules(s, slow, path)
 
+        findings += self._semantic_taint_rules(ctx)
+
         if strong:
             findings.append(self._circuit_note())
         return findings
+
+
+    def _semantic_taint_rules(self, ctx: TargetContext) -> list[FindingCandidate]:
+        facts = getattr(ctx, "semantic", None)
+        if facts is None:
+            try:
+                facts = build_semantic_index(ctx.source_files, ctx.abi)
+            except Exception:  # pragma: no cover - best-effort detector
+                return []
+        report = getattr(ctx, "taint", None)
+        if report is None:
+            return []
+
+        out: list[FindingCandidate] = []
+        emitted: set[tuple[str, str]] = set()
+        for flow in report.flows:
+            if flow.sink_kind != "value_transfer" or flow.confidence < 0.75:
+                continue
+            if flow.source_kind not in {"calldata", "proof_data"}:
+                continue
+            entry = facts.get_function(flow.entrypoint)
+            sink_fn = facts.get_function(flow.function)
+            if entry is None or sink_fn is None:
+                continue
+            entry_text = entry.body + "\n" + sink_fn.body
+            if not (_VERIFY_CALL_RE.search(entry.body) or re.search(r"\bproof\b|publicInputs?|publicSignals?", entry.body, re.I)):
+                continue
+            binding = _binding_text(entry.body)
+            sink_text = str(flow.evidence.get("sink_text", "")) + "\n" + sink_fn.body
+            names: list[str] = []
+            for p in entry.params:
+                name = p.get("name", "")
+                if re.search(r"recipient|receiver|to$|amount|value|fee|relayer|root|nullifier|commitment|output", name, re.I):
+                    names.append(name)
+            names.extend(sorted(getattr(entry, "decoded_fields", set()) or set()))
+            if re.fullmatch(r"[A-Za-z_]\w*", flow.source):
+                names.append(flow.source)
+            missing = []
+            for name in sorted(set(names)):
+                if not _word(name).search(entry_text):
+                    continue
+                if _word(name).search(sink_text) and not _word(name).search(binding):
+                    missing.append(name)
+            if not missing:
+                continue
+            key = (flow.entrypoint, ",".join(missing))
+            if key in emitted:
+                continue
+            emitted.add(key)
+            out.append(self._mk(
+                "semantic_taint_proof_to_value_unbound",
+                f"Proof-gated entrypoint passes unbound values into value sink: {flow.entrypoint}",
+                f"Semantic taint shows caller/proof-controlled data from `{flow.entrypoint}` reaches a value-transfer sink in `{flow.function}` through {' -> '.join(flow.path)}, while {', '.join(missing)} is not visible in the proof/public-input binding text.",
+                9.0, 4.5, "high", "lead_only", "proof-to-value-binding",
+                fn=flow.entrypoint,
+                tests=[
+                    "Trace the flagged symbols through the helper path and confirm the circuit public inputs bind them at the expected indexes.",
+                    "Write a focused fork/invariant harness that mutates the missing value while reusing the same proof commitment.",
+                ],
+                extra={
+                    "missing": missing,
+                    "semantic_facts": True,
+                    "taint_flow": flow.__dict__,
+                    "cross_function": flow.cross_function,
+                },
+            ))
+        return out[:6]
 
     # ---------------------------------------------------- per-function ----- #
     def _function_rules(

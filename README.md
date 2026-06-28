@@ -408,14 +408,18 @@ zero-supply accumulator, position lifecycle, governance snapshot, pause bypass,
 multicall state cache, WAD/RAY unit mismatch, duplicate batch items, and
 semantic taint value-flow leads.
 
+Elite Phase 10 is implemented: `privacy_pool`, `delegatecall`,
+`zk_verifier`, and access-control custom guards now consume semantic/taint facts
+for stronger evidence and fewer false positives. The Semgrep rule pack includes
+weird-hunt corroboration rules, Foundry state-invariant scaffolds include
+family-specific weird-hunt templates, and `backend/core/exploit_benchmark.py`
+contains deterministic exploited-contract regression fixtures for Aztec escape
+hatch, Aztec settlement-boundary, Polygon Royalties zero-transfer reward
+stacking, Euler donate-to-reserves, and Nomad zero-root acceptance.
+
 Recommended next improvements:
 
-1. **Elite Phase 10 - detector evidence hardening**: upgrade `privacy_pool`,
-   `delegatecall`, `zk_verifier`, and access-control custom-guard precision to
-   consume semantic/taint facts directly.
-2. Add Semgrep corroboration rules and Foundry templates for each weird-hunt
-   family.
-3. Add protocol graph and storage-layout hints for cross-contract bugs.
-4. Add a regression benchmark set of exploited contracts with expected detector
-   hits, so each deploy can prove it still catches Aztec/Royalties/Euler/Nomad
-   style bugs.
+1. Add protocol graph and storage-layout hints for cross-contract bugs.
+2. Add bytecode/source alignment checks for proxy/module scans before AI review.
+3. Add a CI command that runs the exploited-contract detector regression pack on
+   every deploy and blocks promotion when an expected detector/rule is missing.

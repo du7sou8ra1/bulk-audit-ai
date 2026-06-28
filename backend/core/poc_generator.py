@@ -274,25 +274,130 @@ def generate_and_run(
 # bug classes we emit a compiling SCAFFOLD with the setup/attack/assert skeleton
 # and TODO markers — far more actionable than the call-succeeds PoC, and honest
 # (it is written to evidence, never counted as a passing PoC).
+_WEIRD_HUNT_POC_TEMPLATES = {
+    "actual_received_accounting": [
+        "Use a fee-on-transfer or rebasing token mock as the deposited asset.",
+        "Compare shares/credits minted from nominal amount versus balanceBefore/balanceAfter delta.",
+    ],
+    "merkle_claim_binding": [
+        "Reuse one Merkle proof while mutating recipient, amount, token/domain, or claim index.",
+        "Assert the same proof cannot move value under any changed field.",
+    ],
+    "bitmap_claim_collision": [
+        "Claim indexes separated by 256 or above the truncated width.",
+        "Assert both indexes cannot map to the same bitmap bit or bypass the claimed marker.",
+    ],
+    "bridge_replay_key": [
+        "Replay the same payload with changed source chain, sender/peer, nonce/message id, or destination.",
+        "Assert the processed key rejects every domain mutation before value moves.",
+    ],
+    "address_alias_bridge": [
+        "Test both aliased and unaliased L1/L2 sender forms for the target rollup.",
+        "Assert only the canonical bridge peer can finalize/mint/unlock.",
+    ],
+    "oracle_freshness_sequencer": [
+        "Mock stale, zero/negative, answeredInRound-lagged, and sequencer-down oracle responses.",
+        "Assert borrow/mint/withdraw/liquidation value paths revert under every bad response.",
+    ],
+    "twap_observation_cardinality": [
+        "Fork a low-cardinality/low-liquidity pool and force period=0 or a very short TWAP window.",
+        "Assert one-block price movement cannot change mint/borrow/withdraw output beyond tolerance.",
+    ],
+    "forced_eth_accounting": [
+        "Force ETH into the contract before share/reward/solvency math using a selfdestruct helper.",
+        "Assert internal accounting, not address(this).balance, controls user redeemable value.",
+    ],
+    "create2_metamorphic_trust": [
+        "Allowlist/check a CREATE2 address before deployment, then deploy unexpected runtime code if possible.",
+        "Assert runtime code hash is validated before trust, delegatecall, or asset movement.",
+    ],
+    "trycatch_finalization": [
+        "Make the downstream external call revert inside the try block.",
+        "Assert processed/consumed/finalized state is not set, or the message remains retryable.",
+    ],
+    "reward_debt_order": [
+        "Use a malicious reward token or receiver callback to reenter claim/harvest before debt update.",
+        "Assert total rewards paid cannot exceed accrued rewards after reentrancy.",
+    ],
+    "accumulator_zero_supply": [
+        "Inject rewards while total supply/shares is zero, then let the first depositor claim.",
+        "Assert rewards are either queued safely or distributed without loss/overallocation.",
+    ],
+    "position_merge_split": [
+        "Create a position with debt/collateral/reward state, then split/merge/transfer it.",
+        "Assert source and destination totals equal the pre-operation invariant.",
+    ],
+    "governance_snapshot_bypass": [
+        "Borrow or transfer voting power in the same transaction/block as vote or execute.",
+        "Assert voting power comes from a prior snapshot/checkpoint, not current balance.",
+    ],
+    "pausability_bypass": [
+        "Pause the protocol, then reach the same value sink through alternate entrypoints or multicall.",
+        "Assert every path to the paused sink reverts while paused.",
+    ],
+    "multicall_state_cache": [
+        "Call the same payable/value-crediting inner function twice through multicall with one msg.value.",
+        "Assert msg.value or cached balance is consumed exactly once.",
+    ],
+    "wad_ray_unit_mismatch": [
+        "Run the formula against 6, 18, and 27 decimal assets and compare to a high-precision model.",
+        "Assert all conversions normalize before multiplication/division.",
+    ],
+    "duplicate_batch_item": [
+        "Submit duplicate ids/tokens/messages in one batch.",
+        "Assert duplicates are rejected or counted exactly once before any value mutation.",
+    ],
+    "cross_function_value_flow": [
+        "Mutate the calldata field that taint analysis says reaches the internal value sink.",
+        "Assert destination and amount cannot be attacker-selected beyond the intended invariant.",
+    ],
+    "privacy_pool_nullifier_ordering": [
+        "Use a receiver/token hook to reenter before the nullifier/spent marker is written.",
+        "Assert the same proof/nullifier cannot withdraw or claim twice.",
+    ],
+    "privacy_pool_public_input_binding": [
+        "Mutate recipient, amount, fee, relayer, root, or nullifier while reusing the proof commitment.",
+        "Assert the verifier/public-input layout rejects every changed value.",
+    ],
+    "proof-to-value-binding": [
+        "Trace every value transferred by the helper path back to a proof-bound public input.",
+        "Assert mutating the flagged value while keeping the proof fixed reverts.",
+    ],
+}
+
 _STATE_INVARIANT_CLASSES = {
     "share_accounting", "settlement_binding", "replay", "decimal", "oracle", "reentrancy",
+    *set(_WEIRD_HUNT_POC_TEMPLATES),
 }
 
 
 def is_state_invariant_finding(candidate: FindingCandidate) -> bool:
     ev = candidate.evidence or {}
+    if ev.get("needs_stateful_poc"):
+        return True
     return str(ev.get("bug_class", "")) in _STATE_INVARIANT_CLASSES
+
+
+def _state_template_comments(bug_class: str) -> str:
+    items = _WEIRD_HUNT_POC_TEMPLATES.get(bug_class, [])
+    if not items:
+        return "// Template checklist: choose setup/attack/assert steps for this invariant family."
+    lines = ["// Template checklist:"]
+    lines.extend(f"// - {item}" for item in items)
+    return "\n".join(lines)
 
 
 def build_state_invariant_scaffold(
     target_address: str, fn_name: str | None, bug_class: str
 ) -> str:
     fn = fn_name or "targetFunction"
+    template_comments = _state_template_comments(bug_class)
     return f"""// SPDX-License-Identifier: MIT
 // AUTO-GENERATED STATE-INVARIANT PoC *SCAFFOLD* — bug class: {bug_class}
 // Runs only on a local fork. DO NOT BROADCAST. This is a SKELETON: complete the
 // three TODO blocks. It is NOT counted as a passing PoC until you make the
 // invariant assertion hold against the real exploit.
+{template_comments}
 pragma solidity ^0.8.19;
 
 interface Vm {{

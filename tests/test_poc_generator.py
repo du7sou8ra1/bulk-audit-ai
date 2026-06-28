@@ -6,8 +6,10 @@ from backend.core.poc_generator import (
     _normalize_type,
     _parse_param_types,
     build_poc_source,
+    build_state_invariant_scaffold,
     generate_poc,
     is_poc_eligible,
+    is_state_invariant_finding,
 )
 from backend.core.proxy_resolver import ProxyInfo
 from backend.core.scoring import ScoreResult
@@ -118,3 +120,19 @@ def test_role_name_is_not_turned_into_a_poc(tmp_path):
     meta = generate_poc(ctx, cand, tmp_path)
     assert meta is not None and meta.get("skipped") is True
     assert not (tmp_path / "test" / "Poc.t.sol").exists()
+
+
+def test_weird_hunt_state_invariant_scaffold_has_family_template():
+    cand = FindingCandidate(
+        detector="reward_debt_order",
+        title="reward before debt",
+        description="d",
+        affected_functions=["claim"],
+        evidence={"bug_class": "reward_debt_order", "needs_stateful_poc": True},
+    )
+    assert is_state_invariant_finding(cand) is True
+    src = build_state_invariant_scaffold(
+        "0x00000000000000000000000000000000000000aa", "claim", "reward_debt_order"
+    )
+    assert "malicious reward token" in src
+    assert "test_invariant_break_claim" in src

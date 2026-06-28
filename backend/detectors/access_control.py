@@ -21,6 +21,7 @@ from .base import (
     is_ultra_profile,
     iter_function_bodies,
 )
+from ..core.semantic_index import build_semantic_index
 
 # Privileged verbs that should virtually always be access-controlled.
 _PRIV_RE = re.compile(
@@ -44,6 +45,10 @@ _INLINE_AUTH_RE = re.compile(
     r"|_check(?:Owner|Role|Admin|Access|Auth|Governor|Governance)\w*\s*\("
     r"|_require(?:Owner|Admin|Role|Governance|Auth|Master|Caller|Sender)\w*\s*\("
     r"|\bhasRole\s*\("
+    r"|require\s*\([^;]*(?:roles?|controllers?|operators?|keepers?|guardians?|allowed|authorized|permissions?)\s*\[[^;]*msg\.sender"
+    r"|if\s*\([^;{]*!\s*(?:roles?|controllers?|operators?|keepers?|guardians?|allowed|authorized|permissions?)\s*\[[^;{]*msg\.sender[^;{]*\)\s*\{?\s*revert"
+    r"|(?:isOwner|isAdmin|isGovernor|isAuthorized|_isAuthorized|canCall)\s*\([^;)]*msg\.sender"
+    r"|(?:AccessControlUnauthorizedAccount|OwnableUnauthorizedAccount|Unauthorized|NotOwner|NotAdmin)\s*\("
     r"|\bproxyCallIfNotAdmin\b|\bifAdmin\b|\bifNotAdmin\b|\bonlyUninitialized\b"
     # NB: `_authorizeUpgrade` deliberately NOT here — an EMPTY override is the bug,
     # so the bare token must not count as a guard (see the UUPS rule below).
@@ -74,7 +79,7 @@ _MODIFIER_DEF_RE = re.compile(r"\bmodifier\s+([A-Za-z_]\w*)\s*(?:\([^)]*\))?\s*\
 _GUARD_BODY_RE = re.compile(
     r"msg\.sender|tx\.origin|hasRole|_check(?:Owner|Role|Admin|Access|Auth|Govern)\w*|"
     r"\bonlyRole\b|roles?\s*\[|\bowner\b|\badmin\b|govern|operator|manager|minter|"
-    r"controller|authoriz",
+    r"controller|guardian|keeper|permission|allowed|authoriz|AccessControlUnauthorizedAccount|OwnableUnauthorizedAccount",
     re.IGNORECASE,
 )
 
@@ -100,6 +105,27 @@ def _guard_modifiers(source: str) -> set[str]:
         if _GUARD_BODY_RE.search(src[start:i + 1]):
             out.add(m.group(1))
     return out
+
+
+def _semantic_guarded(ctx: TargetContext, path: str, fname: str, guard_mods: set[str]) -> bool:
+    facts = getattr(ctx, "semantic", None)
+    if facts is None:
+        try:
+            facts = build_semantic_index(ctx.source_files, ctx.abi)
+        except Exception:  # pragma: no cover - detector must stay best-effort
+            return False
+    matches = [fn for fn in facts.functions_by_key.values() if fn.file == path and fn.name == fname]
+    if not matches:
+        fn = facts.get_function(fname)
+        matches = [fn] if fn is not None else []
+    for fn in matches:
+        if any(mod in guard_mods for mod in fn.modifiers):
+            return True
+        if any(_GUARD_BODY_RE.search(mod) for mod in fn.modifiers):
+            return True
+        if any(_INLINE_AUTH_RE.search(guard) or _GUARD_BODY_RE.search(guard) for guard in fn.guards):
+            return True
+    return False
 
 
 class AccessControlDetector(Detector):
@@ -144,6 +170,8 @@ class AccessControlDetector(Detector):
                 if not ext:
                     continue
                 guarded = header_has_access_control(tail) or bool(_INLINE_AUTH_RE.search(body))
+                if ultra and not guarded:
+                    guarded = _semantic_guarded(ctx, path, fname, guard_mods)
                 if ultra and not guarded and guard_mods and any(
                     re.search(r"\b" + re.escape(gm) + r"\b", tail) for gm in guard_mods
                 ):
