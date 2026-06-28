@@ -14,6 +14,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:  # avoid import cycles at runtime
     from ..core.onchain import OnchainClient
     from ..core.proxy_resolver import ProxyInfo
+    from ..core.semantic_index import ContractFacts
+    from ..core.taint import TaintReport
 
 
 ULTRA_FAMILY_PROFILES = frozenset({"ultra-deep", "ultra-deep-v2"})
@@ -65,6 +67,9 @@ class TargetContext:
     bytecode: str | None = None
     # Parsed tool summaries: {"slither": {...}, "mythril": {...}, ...}
     tool_outputs: dict = field(default_factory=dict)
+    # Elite Phase 8: shared semantic/taint facts for detectors/reasoners.
+    semantic: "ContractFacts | None" = None
+    taint: "TaintReport | None" = None
 
     # ------------------------------------------------------------------ #
     def all_source_text(self) -> str:

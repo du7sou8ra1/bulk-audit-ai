@@ -76,6 +76,8 @@ backend/outputs/scans/<scan_id>/<address>/
 - Bytecode intelligence: selector clusters, opcode risk signals, closed-source surface hints.
 - Bytecode probes: selector-specific fork probe plans for high-risk bytecode surfaces.
 - 2020-2026 exploit detectors: bridge replay/domain binding, settlement-boundary mismatch, zero-value transfer reward stacking, ERC777 hook accounting, read-only reserve reentrancy, unsafe mint math, CLMM tick boundary rounding, lending donation exchange-rate manipulation, verifier spoofing, upgrade/admin blast radius, and more.
+- Semantic index: shared Solidity facts for params, modifiers, guards, reads/writes, calls, decoded fields, events, mappings, external calls, and value sinks.
+- Taint/dataflow core: caller/calldata/proof/oracle sources into value-transfer, delegatecall, upgrade, replay-marker, and accounting-write sinks, including simple external -> internal helper paths.
 - Invariant reasoner: LLM-assisted cross-function hypotheses over value-moving entrypoints.
 - Adversarial refuter: independent review pass that tries to disprove each candidate before final scoring.
 - Value-context probe: read-only balance/asset/totalSupply/totalAssets checks plus ABI/source value-flow hints. Unknown RPC data never suppresses a bug by itself.
@@ -391,26 +393,23 @@ install_tools.sh   .env.example   requirements.txt   docker-compose.yml
 
 ## Roadmap / next phase
 
-The items below were **not useless**. They were ignored in the last zip import
-because the zip did not safely implement them yet. They are the next serious
-phase if the goal is an elite weird-bug hunter:
+Elite Phase 8 is now implemented: `backend/core/semantic_index.py` builds shared
+Solidity facts, and `backend/core/taint.py` follows caller/calldata/proof/oracle
+sources into value-transfer, delegatecall, upgrade, replay-marker, and accounting
+write sinks. Each scan now attaches `ctx.semantic`, `ctx.taint`, and a taint
+summary for future detectors.
 
-1. `backend/core/semantic_index.py` - richer Solidity facts: params, modifiers,
-   guards, reads/writes, internal calls, external calls, decoded fields, events,
-   mappings, and value sinks.
-2. `backend/core/taint.py` - small inter-function dataflow: caller/calldata/proof
-   fields -> internal helpers -> value sinks / root / nullifier / replay markers.
-3. `backend/detectors/weird_hunt.py` - rare detectors for actual-received
-   accounting, weak Merkle binding, bitmap collisions, bridge replay keys, forced
-   ETH accounting, CREATE2/metamorphic trust, try/catch finalization, reward-debt
-   order, accumulator zero supply, position split/merge, governance snapshot
-   bypass, pause bypass, multicall msg.value reuse, unit mismatches, and duplicate
-   batch items.
-4. Better `privacy_pool`, `delegatecall`, `zk_verifier`, and access-control
-   custom-guard precision.
-5. More Semgrep corroboration rules and Foundry templates for each weird-bug
+Next serious phase if the goal is an elite weird-bug hunter:
+
+1. **Elite Phase 9 - weird-hunt detector pack**: build
+   `backend/detectors/weird_hunt.py` using the semantic/taint core for
+   actual-received accounting, weak Merkle binding, bitmap collisions, bridge
+   replay keys, forced ETH accounting, CREATE2/metamorphic trust, try/catch
+   finalization, reward-debt order, accumulator zero supply, position
+   split/merge, governance snapshot bypass, pause bypass, multicall `msg.value`
+   reuse, unit mismatches, and duplicate batch items.
+2. Upgrade `privacy_pool`, `delegatecall`, `zk_verifier`, and access-control
+   custom-guard precision to consume semantic/taint facts.
+3. Add Semgrep corroboration rules and Foundry templates for each weird-bug
    family.
-6. Protocol graph and storage-layout hints for cross-contract bugs.
-
-Recommended next build target: **Elite Phase 8 - semantic index + taint core**,
-then **Elite Phase 9 - weird-hunt detector pack**.
+4. Add protocol graph and storage-layout hints for cross-contract bugs.

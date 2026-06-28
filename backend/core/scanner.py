@@ -52,6 +52,8 @@ from .invariant_reasoner import run_invariant_reasoner
 from .onchain import OnchainClient
 from .proxy_resolver import resolve_proxy
 from .refuter import refute as refute_finding
+from .semantic_index import build_semantic_index
+from .taint import analyze_taint
 from .scoring import score_finding, mark_corroboration
 from .source_fetcher import (
     SourcePackage,
@@ -391,6 +393,33 @@ async def process_target(
         bytecode=bytecode,
         tool_outputs=tool_outputs,
     )
+
+    try:
+        ctx.semantic = build_semantic_index(ctx.source_files, ctx.abi)
+        tool_outputs["semantic-index"] = {
+            "status": "ok",
+            "findings": [],
+            "meta": {
+                "functions": len(ctx.semantic.functions_by_key),
+                "entrypoints": sorted(ctx.semantic.entrypoints)[:80],
+                "state_vars": len(ctx.semantic.state_vars),
+                "mappings": len(ctx.semantic.mappings),
+            },
+        }
+        ctx.taint = analyze_taint(ctx.semantic)
+        tool_outputs["taint"] = {
+            "status": "ok",
+            "findings": [],
+            "meta": _taint_summary(ctx.taint),
+        }
+    except Exception as exc:
+        logger.warning("semantic index failed for %s: %s", address, exc)
+        ctx.semantic = None
+        tool_outputs["semantic-index"] = {
+            "status": "failed",
+            "findings": [],
+            "meta": {"error": str(exc)[:500]},
+        }
 
     if _toggle(toggles, "value_context", s.enable_value_context):
         try:
