@@ -76,6 +76,7 @@ backend/outputs/scans/<scan_id>/<address>/
 - Bytecode intelligence: selector clusters, opcode risk signals, closed-source surface hints.
 - Bytecode probes: selector-specific fork probe plans for high-risk bytecode surfaces.
 - 2020-2026 exploit detectors: bridge replay/domain binding, settlement-boundary mismatch, zero-value transfer reward stacking, ERC777 hook accounting, read-only reserve reentrancy, unsafe mint math, CLMM tick boundary rounding, lending donation exchange-rate manipulation, verifier spoofing, upgrade/admin blast radius, and more.
+- Weird-hunt detector pack: actual-received accounting, Merkle leaf binding, bitmap claim collision, bridge replay keys, address aliasing, oracle freshness/sequencer, TWAP cardinality, forced ETH accounting, CREATE2/metamorphic trust, try/catch finalization, reward-debt order, zero-supply accumulators, position split/merge, governance snapshot bypass, pause bypass, multicall state cache, WAD/RAY unit mismatch, duplicate batch items, and semantic taint value-flow leads.
 - Semantic index: shared Solidity facts for params, modifiers, guards, reads/writes, calls, decoded fields, events, mappings, external calls, and value sinks.
 - Taint/dataflow core: caller/calldata/proof/oracle sources into value-transfer, delegatecall, upgrade, replay-marker, and accounting-write sinks, including simple external -> internal helper paths.
 - Invariant reasoner: LLM-assisted cross-function hypotheses over value-moving entrypoints.
@@ -305,6 +306,7 @@ classes and precision layers.
 - Hooks and callback risks: ERC777 balance bypass, hook callback auth, pair burn/sync issues, receiver-hook credit, deposit callback CEI.
 - Oracle and market math: thin-liquidity spot oracle, read-only reserve reentrancy, CLMM tick boundary rounding, invariant precision loss, decimal unit mismatch.
 - 2026 classes: settlement count/boundary mismatch, flawed zero-value transfer reward stacking, callback payer/proof binding, memory-vs-storage persistence, signer allowlist, fee-on-transfer swap bounds, asymmetric SafeMath, and more.
+- Weird-hunt classes: actual-received accounting, weak Merkle binding, bitmap claim aliasing, bridge replay keys, L1/L2 address alias mismatch, Chainlink freshness/sequencer checks, TWAP cardinality/period mistakes, forced ETH accounting, CREATE2/metamorphic trust, try/catch finalization, reward-debt update order, zero-supply reward accumulators, position split/merge duplication, governance snapshot bypass, pause bypass, multicall `msg.value` reuse, WAD/RAY/unit mismatch, duplicate batch items, and cross-function calldata-to-value-sink taint flow.
 
 ### Per-scan toggles
 
@@ -393,23 +395,27 @@ install_tools.sh   .env.example   requirements.txt   docker-compose.yml
 
 ## Roadmap / next phase
 
-Elite Phase 8 is now implemented: `backend/core/semantic_index.py` builds shared
+Elite Phase 8 is implemented: `backend/core/semantic_index.py` builds shared
 Solidity facts, and `backend/core/taint.py` follows caller/calldata/proof/oracle
 sources into value-transfer, delegatecall, upgrade, replay-marker, and accounting
-write sinks. Each scan now attaches `ctx.semantic`, `ctx.taint`, and a taint
-summary for future detectors.
+write sinks. Each scan attaches `ctx.semantic`, `ctx.taint`, and a taint summary.
 
-Next serious phase if the goal is an elite weird-bug hunter:
+Elite Phase 9 is implemented: `backend/detectors/weird_hunt.py` adds the
+weird-bug detector pack to `ultra-deep-v2`, including actual-received
+accounting, Merkle/bitmap/bridge replay binding, oracle/TWAP/forced-ETH,
+CREATE2/metamorphic trust, try/catch finalization, reward-debt order,
+zero-supply accumulator, position lifecycle, governance snapshot, pause bypass,
+multicall state cache, WAD/RAY unit mismatch, duplicate batch items, and
+semantic taint value-flow leads.
 
-1. **Elite Phase 9 - weird-hunt detector pack**: build
-   `backend/detectors/weird_hunt.py` using the semantic/taint core for
-   actual-received accounting, weak Merkle binding, bitmap collisions, bridge
-   replay keys, forced ETH accounting, CREATE2/metamorphic trust, try/catch
-   finalization, reward-debt order, accumulator zero supply, position
-   split/merge, governance snapshot bypass, pause bypass, multicall `msg.value`
-   reuse, unit mismatches, and duplicate batch items.
-2. Upgrade `privacy_pool`, `delegatecall`, `zk_verifier`, and access-control
-   custom-guard precision to consume semantic/taint facts.
-3. Add Semgrep corroboration rules and Foundry templates for each weird-bug
+Recommended next improvements:
+
+1. **Elite Phase 10 - detector evidence hardening**: upgrade `privacy_pool`,
+   `delegatecall`, `zk_verifier`, and access-control custom-guard precision to
+   consume semantic/taint facts directly.
+2. Add Semgrep corroboration rules and Foundry templates for each weird-hunt
    family.
-4. Add protocol graph and storage-layout hints for cross-contract bugs.
+3. Add protocol graph and storage-layout hints for cross-contract bugs.
+4. Add a regression benchmark set of exploited contracts with expected detector
+   hits, so each deploy can prove it still catches Aztec/Royalties/Euler/Nomad
+   style bugs.

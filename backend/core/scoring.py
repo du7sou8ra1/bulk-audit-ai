@@ -49,6 +49,14 @@ _TOOL_AGREEMENT_KEYWORDS = {
         "upgrade",
         "executor",
     ),
+
+    "actual_received_accounting": ("transferfrom", "balance", "fee on transfer", "received"),
+    "merkle_claim_binding": ("merkle", "proof", "claim"),
+    "bridge_replay_key": ("bridge", "processed", "replay", "message"),
+    "oracle_freshness_sequencer": ("oracle", "chainlink", "latestrounddata", "stale"),
+    "forced_eth_accounting": ("address(this).balance", "balance", "selfdestruct"),
+    "multicall_state_cache": ("delegatecall", "msg.value", "multicall"),
+    "duplicate_batch_item": ("batch", "duplicate", "loop"),
 }
 
 # Detectors that emit STRUCTURAL findings (a concrete code pattern, not a fuzzy
@@ -69,6 +77,14 @@ _STRUCTURAL_DETECTORS = frozenset({
     "invariant_precision_loss", "unsafe_mint_math",
     "flash_cycle_rounding_withdraw", "multisig_delegatecall_payload",
     "bytecode_periphery",
+    "actual_received_accounting", "merkle_claim_binding",
+    "bitmap_claim_collision", "bridge_replay_key", "address_alias_bridge",
+    "oracle_freshness_sequencer", "twap_observation_cardinality",
+    "forced_eth_accounting", "create2_metamorphic_trust",
+    "trycatch_finalization", "reward_debt_order", "accumulator_zero_supply",
+    "position_merge_split", "governance_snapshot_bypass", "pausability_bypass",
+    "multicall_state_cache", "wad_ray_unit_mismatch", "duplicate_batch_item",
+    "weird_hunt_taint_value_flow",
 })
 
 

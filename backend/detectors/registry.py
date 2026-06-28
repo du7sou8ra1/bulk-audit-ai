@@ -36,6 +36,27 @@ from .time_logic import TimeLogicDetector
 from .timelock_roles import TimelockRolesDetector
 from .token_logic import TokenLogicDetector
 from .zk_verifier import ZkVerifierDetector
+from .weird_hunt import (
+    AccumulatorZeroSupplyDetector,
+    ActualReceivedAccountingDetector,
+    AddressAliasBridgeDetector,
+    BitmapClaimCollisionDetector,
+    BridgeReplayKeyDetector,
+    Create2MetamorphicTrustDetector,
+    DuplicateBatchItemDetector,
+    ForcedEthAccountingDetector,
+    GovernanceSnapshotBypassDetector,
+    MerkleClaimBindingDetector,
+    MulticallStateCacheDetector,
+    OracleFreshnessSequencerDetector,
+    PausabilityBypassDetector,
+    PositionMergeSplitDetector,
+    RewardDebtOrderDetector,
+    TryCatchFinalizationDetector,
+    TwapObservationCardinalityDetector,
+    WadRayUnitMismatchDetector,
+    WeirdHuntTaintValueFlowDetector,
+)
 from .ultra_deep import (
     ArbitraryFromTransferFromDetector,
     CrossChainReceiverSourceAuthDetector,
@@ -181,12 +202,34 @@ ULTRA_DEEP_V2_EXTRA_DETECTORS: list[type[Detector]] = [
     CustodySweepCentralizationDetector,
 ]
 
+WEIRD_HUNT_DETECTORS: list[type[Detector]] = [
+    ActualReceivedAccountingDetector,
+    MerkleClaimBindingDetector,
+    BitmapClaimCollisionDetector,
+    BridgeReplayKeyDetector,
+    AddressAliasBridgeDetector,
+    OracleFreshnessSequencerDetector,
+    TwapObservationCardinalityDetector,
+    ForcedEthAccountingDetector,
+    Create2MetamorphicTrustDetector,
+    TryCatchFinalizationDetector,
+    RewardDebtOrderDetector,
+    AccumulatorZeroSupplyDetector,
+    PositionMergeSplitDetector,
+    GovernanceSnapshotBypassDetector,
+    PausabilityBypassDetector,
+    MulticallStateCacheDetector,
+    WadRayUnitMismatchDetector,
+    DuplicateBatchItemDetector,
+    WeirdHuntTaintValueFlowDetector,
+]
+
 _PROFILE_MAP: dict[str, list[type[Detector]]] = {
     # "deep" = the current engine, FROZEN. "ultra-deep" = deep + ctx.profile-gated
     # enhanced heuristics in existing detectors + ULTRA_EXTRA_DETECTORS new classes.
     "deep": FULL_DETECTORS,
     "ultra-deep": FULL_DETECTORS + ULTRA_EXTRA_DETECTORS,
-    "ultra-deep-v2": FULL_DETECTORS + ULTRA_EXTRA_DETECTORS + ULTRA_DEEP_V2_EXTRA_DETECTORS,
+    "ultra-deep-v2": FULL_DETECTORS + ULTRA_EXTRA_DETECTORS + ULTRA_DEEP_V2_EXTRA_DETECTORS + WEIRD_HUNT_DETECTORS,
 }
 
 
