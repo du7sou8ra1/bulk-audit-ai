@@ -31,7 +31,16 @@ export interface Toggles {
   semgrep: boolean | null
   foundry: boolean | null
   fuzzing: boolean | null
+  bytecode_intel: boolean | null
+  bytecode_probes: boolean | null
   deepseek: boolean | null
+  invariant_reasoner: boolean | null
+  refutation: boolean | null
+  flashloan_sim: boolean | null
+  value_context: boolean | null
+  sanity_liveness: boolean | null
+  binding_hard_gate: boolean | null
+  pattern_priors: boolean | null
 }
 
 export interface Scan {
@@ -152,7 +161,19 @@ export interface Settings {
     semgrep: boolean
     foundry: boolean
     fuzzing: boolean
+    bytecode_intel: boolean
+    bytecode_probes: boolean
     deepseek: boolean
+    invariant_reasoner: boolean
+    refutation: boolean
+    sourcify: boolean
+    flashloan_sim: boolean
+    value_context: boolean
+    sanity_liveness: boolean
+    refuter_precision_rules: boolean
+    binding_hard_gate: boolean
+    critical_value_gate: boolean
+    pattern_priors: boolean
   }
   limits: Record<string, unknown>
 }

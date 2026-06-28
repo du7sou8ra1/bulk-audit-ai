@@ -26,8 +26,17 @@ const TOOL_DEFS: { key: keyof Toggles; label: string; hint: string }[] = [
   { key: 'slither', label: 'Slither', hint: 'Static analysis' },
   { key: 'mythril', label: 'Mythril', hint: 'Symbolic execution' },
   { key: 'semgrep', label: 'Semgrep', hint: 'Pattern rules' },
+  { key: 'bytecode_intel', label: 'Bytecode intel', hint: 'Selectors + opcode risk signals' },
+  { key: 'bytecode_probes', label: 'Bytecode probes', hint: 'Selector-specific fork probe plan' },
   { key: 'foundry', label: 'Foundry simulations', hint: 'On-chain forks' },
   { key: 'fuzzing', label: 'Fuzzing', hint: 'Readiness + Foundry suite' },
+  { key: 'flashloan_sim', label: 'Flashloan sims', hint: 'Oracle/donation fork checks' },
+  { key: 'invariant_reasoner', label: 'Invariant reasoner', hint: 'Cross-function hypotheses' },
+  { key: 'refutation', label: 'Refuter', hint: 'Adversarial finding review' },
+  { key: 'value_context', label: 'Value context', hint: 'Read-only value/dependency evidence' },
+  { key: 'sanity_liveness', label: 'Sanity liveness', hint: 'Initializer/proxy liveness reads' },
+  { key: 'binding_hard_gate', label: 'Binding hard gate', hint: 'Caller-bound false-positive guard' },
+  { key: 'pattern_priors', label: 'Pattern priors', hint: 'Use prior refutations as context' },
   { key: 'deepseek', label: 'DeepSeek AI review', hint: 'LLM triage' },
 ]
 
@@ -59,7 +68,16 @@ export default function NewScan() {
     semgrep: true,
     foundry: false,
     fuzzing: false,
+    bytecode_intel: true,
+    bytecode_probes: true,
     deepseek: true,
+    invariant_reasoner: true,
+    refutation: true,
+    flashloan_sim: true,
+    value_context: true,
+    sanity_liveness: true,
+    binding_hard_gate: true,
+    pattern_priors: true,
   })
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -82,14 +100,7 @@ export default function NewScan() {
         scan_profile: profile,
         addresses_blob: blob,
         targets,
-        toggles: {
-          slither: toggles.slither,
-          mythril: toggles.mythril,
-          semgrep: toggles.semgrep,
-          foundry: toggles.foundry,
-          fuzzing: toggles.fuzzing,
-          deepseek: toggles.deepseek,
-        },
+        toggles,
       })
       navigate(`/scans/${scan.id}`)
     } catch (e) {

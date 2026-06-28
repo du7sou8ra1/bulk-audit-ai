@@ -16,6 +16,7 @@ from pathlib import Path
 
 from ..config import ROOT_DIR, get_settings
 from ..models import Classification
+from .candidate_sanity import deterministic_attacker_binding_refutation
 from .llm import chat_json
 
 logger = logging.getLogger("bulkauditai.ai")
@@ -30,7 +31,8 @@ bug unless there is unauthorized access, a public role, a role mismatch, or a by
 Historical audit-corpus matches are precedent/context only, never proof of target
 exploitability.
 Return ONLY JSON with keys: classification, severity, confidence, rationale, why_not_higher,
-next_tests, reportability."""
+next_tests, reportability, value_moves, value_to, destination_control,
+attacker_control_binding, critical_path_complete."""
 
 _ULTRA_REVIEW_ADDENDUM = """
 
@@ -58,6 +60,11 @@ class AIResult:
     why_not_higher: str = ""
     next_tests: list[str] = field(default_factory=list)
     reportability: str = "needs_more_testing"
+    value_moves: str = ""
+    value_to: str = ""
+    destination_control: str = ""
+    attacker_control_binding: dict = field(default_factory=dict)
+    critical_path_complete: bool = False
     model: str = ""
     prompt_text: str = ""
     request_json: dict = field(default_factory=dict)
@@ -122,6 +129,28 @@ def evidence_has_unauthorized_path(packet: dict) -> bool:
     return False
 
 
+def _critical_path_complete(parsed: dict, packet: dict) -> bool:
+    ev = packet.get("evidence", {}) or {}
+    binding = parsed.get("attacker_control_binding")
+    if not isinstance(binding, dict):
+        binding = {}
+    value_moves = str(parsed.get("value_moves") or "").strip()
+    value_to = str(parsed.get("value_to") or "").strip()
+    destination_control = str(parsed.get("destination_control") or "").strip().lower()
+    if value_moves and value_to and destination_control == "attacker_controlled" and binding.get("variable"):
+        return True
+    if ev.get("poc_passed") and evidence_has_unauthorized_path(packet):
+        return True
+    return False
+
+
+def _source_for_binding_check(packet: dict) -> str:
+    snippets = packet.get("source_snippets") or []
+    if isinstance(snippets, list):
+        return "\n".join(str((s or {}).get("code", "")) for s in snippets if isinstance(s, dict))
+    return ""
+
+
 def _has_concrete_defusing_control(ev: dict) -> bool:
     refutation = ev.get("refutation") or {}
     if ev.get("suppressed"):
@@ -158,7 +187,7 @@ def _is_high_signal_packet(packet: dict) -> bool:
     )
 
 
-def _apply_post_triage_guardrails(packet: dict, result: AIResult) -> None:
+def _apply_post_triage_guardrails(packet: dict, result: AIResult, *, binding_refuted: bool = False) -> None:
     """Conservative AI floor: do not let AI bury strong unresolved leads."""
     ev = packet.get("evidence", {}) or {}
 
@@ -178,6 +207,7 @@ def _apply_post_triage_guardrails(packet: dict, result: AIResult) -> None:
     if (
         _is_high_signal_packet(packet)
         and not _has_concrete_defusing_control(ev)
+        and not binding_refuted
         and result.classification in (Classification.FALSE_POSITIVE, Classification.LOW_OR_INFO)
     ):
         result.classification = Classification.NEEDS_MORE_INVESTIGATION
@@ -244,7 +274,45 @@ def review_finding(packet: dict, *, prompt_save_path: Path | None = None) -> AIR
     nt = parsed.get("next_tests", [])
     result.next_tests = nt if isinstance(nt, list) else [str(nt)]
     result.reportability = str(parsed.get("reportability", "needs_more_testing"))
+    result.value_moves = str(parsed.get("value_moves", ""))[:1000]
+    result.value_to = str(parsed.get("value_to", ""))[:1000]
+    result.destination_control = str(parsed.get("destination_control", ""))[:200]
+    binding = parsed.get("attacker_control_binding")
+    result.attacker_control_binding = binding if isinstance(binding, dict) else {}
+    result.critical_path_complete = bool(parsed.get("critical_path_complete"))
 
-    _apply_post_triage_guardrails(packet, result)
+    binding_refuted = False
+    if get_settings().enable_binding_hard_gate and result.attacker_control_binding:
+        ev = dict(packet.get("evidence", {}) or {})
+        ev["attacker_control_binding"] = result.attacker_control_binding
+        reason = deterministic_attacker_binding_refutation(
+            _source_for_binding_check(packet),
+            ev,
+            detector=str((packet.get("candidate") or {}).get("detector", "")),
+            title=str((packet.get("candidate") or {}).get("title", "")),
+        )
+        if reason:
+            binding_refuted = True
+            result.classification = Classification.FALSE_POSITIVE
+            result.enforced_downgrade = True
+            result.why_not_higher = "[enforced] deterministic attacker-binding check refuted claim: " + reason
+            result.rationale = (result.rationale + " " + reason).strip()[:4000]
+            result.reportability = "do_not_submit"
+
+    if (
+        get_settings().enable_critical_value_gate
+        and result.classification
+        in (Classification.CONFIRMED_CRITICAL, Classification.LIKELY_CRITICAL_NEEDS_POC)
+        and not _critical_path_complete(parsed, packet)
+    ):
+        result.classification = Classification.NEEDS_MORE_INVESTIGATION
+        result.enforced_downgrade = True
+        result.why_not_higher = (
+            "[enforced] Critical claim did not provide the required value movement triad "
+            "(what value moves, to whom, controlled by whom) with a cited attacker-control binding. "
+            + result.why_not_higher
+        )
+
+    _apply_post_triage_guardrails(packet, result, binding_refuted=binding_refuted)
 
     return result

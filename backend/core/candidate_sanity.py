@@ -38,6 +38,11 @@ _INIT_GUARD_RE = re.compile(
     r"require\s*\([^)]*(owner|admin)\s*==\s*address\s*\(\s*0\s*\)",
     re.I,
 )
+_AMM_ONE_TIME_INIT_RE = re.compile(
+    r"factory\s*==\s*address\s*\(\s*0\s*\)|address\s*\(\s*0\s*\)\s*==\s*factory|"
+    r"slot0\s*\.\s*sqrtPriceX96\s*==\s*0|0\s*==\s*slot0\s*\.\s*sqrtPriceX96",
+    re.I,
+)
 _PROXY_ADMIN_GATE_RE = re.compile(
     r"\bproxyCallIfNotAdmin\b|\bifAdmin\b|\bifNotAdmin\b|"
     r"_requireAdmin\s*\(|_checkAdmin\s*\(|_fallback\s*\(",
@@ -57,9 +62,22 @@ _VALUE_OR_STATE_RE = re.compile(
     r"\.transfer\s*\(|safeTransfer\s*\(|safeTransferFrom\s*\(|transferFrom\s*\(|\.call\s*[({]",
     re.I,
 )
+_ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
+_APPROVAL_LIKE_RE = re.compile(r"approval|allowance|transferfrom|drain|router", re.I)
+_SOURCE_ROLE_RE = re.compile(r"source|src|from|owner|payer|victim", re.I)
+_SAFE_ASSIGNMENTS = (
+    ("msg.sender", re.compile(r"\b{var}\b\s*=\s*(?:_msgSender\s*\(\s*\)|msg\.sender)\b", re.I)),
+    ("address(this)", re.compile(r"\b{var}\b\s*=\s*address\s*\(\s*this\s*\)", re.I)),
+)
 
 
-def apply_candidate_sanity(ctx: TargetContext, candidates: list[FindingCandidate]) -> int:
+def apply_candidate_sanity(
+    ctx: TargetContext,
+    candidates: list[FindingCandidate],
+    *,
+    enable_liveness: bool = True,
+    enable_binding_gate: bool = True,
+) -> int:
     """Mutate candidates with ``evidence['suppressed']`` for deterministic FPs.
 
     Returns the number of candidates suppressed by this pass.
@@ -70,6 +88,14 @@ def apply_candidate_sanity(ctx: TargetContext, candidates: list[FindingCandidate
     for cand in candidates:
         if (cand.evidence or {}).get("suppressed"):
             continue
+        if enable_liveness:
+            _attach_liveness_evidence(ctx, cand)
+        if enable_binding_gate:
+            binding_reason = _binding_refutation_for_candidate(cand, entries)
+            if binding_reason:
+                _suppress(cand, binding_reason, concrete=True, pattern_class="attacker_binding_safe")
+                suppressed += 1
+                continue
         reason = _suppression_reason(ctx, cand, entries, abi_names)
         if reason:
             _suppress(cand, reason)
@@ -113,6 +139,8 @@ def _suppression_reason(
         live = _read_initialized(ctx)
         if live is True:
             return f"`{fn}` is not exploitable on this target: live isInitialized()/initialized() is true"
+        if matches and any(_AMM_ONE_TIME_INIT_RE.search(e.tail + "\n" + e.body) for e in matches):
+            return f"`{fn}` is an AMM pool one-time factory initializer guarded by factory/slot0 state"
         if matches and any(_INIT_GUARD_RE.search(e.tail + "\n" + e.body) for e in matches):
             return f"`{fn}` has a visible one-shot initializer guard"
 
@@ -220,6 +248,122 @@ def _read_initialized(ctx: TargetContext) -> bool | None:
     return None
 
 
+def _attach_liveness_evidence(ctx: TargetContext, cand: FindingCandidate) -> None:
+    blob = f"{cand.detector} {cand.title} {cand.description} {ctx.contract_name}".lower()
+    if not any(k in blob for k in ("init", "initializer", "proxy", "vault")):
+        return
+    onchain = getattr(ctx, "onchain", None)
+    if onchain is None or not getattr(onchain, "available", False):
+        return
+    checks = []
+    zero_seen = False
+    for sig in ("owner()", "factory()", "asset()"):
+        try:
+            val = onchain.call_typed(ctx.address, sig, return_types=["address"])
+        except Exception:
+            val = None
+        if val is None:
+            continue
+        try:
+            zero = int(str(val), 16) == 0
+        except Exception:
+            zero = False
+        checks.append({"getter": sig, "value": _ZERO_ADDRESS if zero else str(val), "zero": zero})
+        zero_seen = zero_seen or zero
+    if not checks:
+        return
+    ev = cand.evidence or {}
+    ev["liveness_getters"] = checks
+    if zero_seen:
+        ev["never_initialized"] = True
+    cand.evidence = ev
+
+
+def _claimed_attacker_bindings(ev: dict) -> list[dict]:
+    out: list[dict] = []
+    for key in ("attacker_control_binding", "attacker_binding"):
+        item = ev.get(key)
+        if isinstance(item, dict):
+            out.append(item)
+    vals = ev.get("attacker_controlled_variables") or ev.get("controlled_variables") or []
+    if isinstance(vals, str):
+        vals = [vals]
+    if isinstance(vals, list):
+        for val in vals:
+            if isinstance(val, dict):
+                out.append(val)
+            elif val:
+                out.append({"variable": str(val)})
+    for key in ("attacker_controlled_variable", "attacker_variable", "controlled_variable"):
+        if ev.get(key):
+            out.append({"variable": str(ev.get(key)), "role": str(ev.get("attacker_variable_role", ""))})
+    seen = set()
+    unique = []
+    for item in out:
+        var = str(item.get("variable") or "").strip()
+        if not var or var in seen:
+            continue
+        seen.add(var)
+        unique.append(item)
+    return unique
+
+
+def deterministic_attacker_binding_refutation(
+    code: str,
+    evidence: dict,
+    *,
+    detector: str = "",
+    title: str = "",
+) -> str:
+    """Hard-gate hallucinated attacker-control bindings using cited code."""
+    if not code or not evidence:
+        return ""
+    blob = f"{detector} {title} {evidence.get('bug_class', '')}"
+    approval_like = bool(_APPROVAL_LIKE_RE.search(blob))
+    for item in _claimed_attacker_bindings(evidence):
+        var = str(item.get("variable") or "").strip()
+        if not re.fullmatch(r"[A-Za-z_]\w*", var):
+            continue
+        role = str(item.get("role") or item.get("kind") or item.get("binding_role") or "").lower()
+        var_re = re.escape(var)
+        if re.search(rf"\b(?:immutable|constant)\b[^;\n]*\b{var_re}\b|\b{var_re}\b[^;\n]*\b(?:immutable|constant)\b", code, re.I):
+            return f"cited attacker-controlled variable `{var}` is immutable/constant in the cited code"
+        for label, template in _SAFE_ASSIGNMENTS:
+            pat = re.compile(template.pattern.format(var=var_re), template.flags)
+            if not pat.search(code):
+                continue
+            if label == "msg.sender":
+                source_like = bool(_SOURCE_ROLE_RE.search(role)) or bool(
+                    re.search(rf"(safeTransferFrom|transferFrom)\s*\(\s*{var_re}\s*,", code, re.I)
+                )
+                if approval_like and source_like:
+                    return (
+                        f"cited transfer source `{var}` is caller-bound to msg.sender; "
+                        "the caller spends their own approval, not a third-party approval"
+                    )
+                continue
+            return f"cited attacker-controlled variable `{var}` is bound to {label} in the cited code"
+    return ""
+
+
+def _binding_refutation_for_candidate(
+    cand: FindingCandidate,
+    entries: dict[str, list[FunctionEntry]],
+) -> str:
+    fn = _candidate_function(cand)
+    code = ""
+    if fn:
+        code = "\n".join((e.tail + "\n" + e.body) for e in entries.get(fn.lower(), []))
+    if not code:
+        code = str((cand.evidence or {}).get("snippet", ""))
+    return deterministic_attacker_binding_refutation(
+        code,
+        cand.evidence or {},
+        detector=cand.detector,
+        title=cand.title,
+    )
+
+
 def _looks_like_normal_user_asset_method(fn: str, matches: list[FunctionEntry]) -> bool:
     if not (_USER_EXIT_NAME_RE.match(fn) or _USER_MINT_NAME_RE.match(fn)):
         return False
@@ -249,11 +393,26 @@ def _looks_like_pure_verifier_helper(fn: str, matches: list[FunctionEntry]) -> b
     return bool(matches) and all(not _VALUE_OR_STATE_RE.search(e.body or "") for e in matches)
 
 
-def _suppress(cand: FindingCandidate, reason: str) -> None:
+def _suppress(
+    cand: FindingCandidate,
+    reason: str,
+    *,
+    concrete: bool = False,
+    pattern_class: str = "",
+) -> None:
     ev = cand.evidence or {}
     ev["suppressed"] = True
     ev["suppressed_reason"] = reason
     ev["sanity_filter"] = True
     ev["refuted"] = True
-    ev["refutation"] = {"attempted": True, "is_real": False, "refutation": reason}
+    if concrete:
+        ev["refuted_concrete"] = True
+    if pattern_class:
+        ev["refutation_pattern_class"] = pattern_class
+    ev["refutation"] = {
+        "attempted": True,
+        "is_real": False,
+        "refutation": reason,
+        "concrete_mitigation": concrete,
+    }
     cand.evidence = ev

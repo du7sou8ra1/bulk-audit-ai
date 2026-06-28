@@ -392,6 +392,25 @@ async def process_target(
         tool_outputs=tool_outputs,
     )
 
+    if _toggle(toggles, "value_context", s.enable_value_context):
+        try:
+            value_context = await asyncio.to_thread(
+                onchain.probe_value_context,
+                address,
+                abi=ctx.abi,
+                source_text=ctx.all_source_text(),
+                referenced_by=None,
+                contract_name=ctx.contract_name,
+            )
+        except Exception as exc:
+            logger.warning("value-context probe failed for %s: %s", address, exc)
+            value_context = {
+                "state": "unknown",
+                "signal": "unknown",
+                "notes": [f"value-context probe failed: {exc}"],
+            }
+        tool_outputs["value-context"] = {"status": "ok", "findings": [], "meta": value_context}
+
     if _toggle(toggles, "bytecode_intel", s.enable_bytecode_intel):
         tr = _create_toolrun(target_id, "bytecode-intel")
         hub.publish(
@@ -524,7 +543,17 @@ async def process_target(
             logger.warning("invariant reasoner failed on %s: %s", address, exc)
             _log(scan_id, f"[{address}] invariant reasoner error: {exc}")
 
-    sanity_suppressed = apply_candidate_sanity(ctx, candidates)
+    value_context = ((tool_outputs.get("value-context") or {}).get("meta") or None)
+    if value_context:
+        for cand in candidates:
+            cand.evidence.setdefault("value_context", value_context)
+
+    sanity_suppressed = apply_candidate_sanity(
+        ctx,
+        candidates,
+        enable_liveness=_toggle(toggles, "sanity_liveness", s.enable_sanity_liveness),
+        enable_binding_gate=_toggle(toggles, "binding_hard_gate", s.enable_binding_hard_gate),
+    )
     if sanity_suppressed:
         _log(scan_id, f"[{address}] sanity filter: suppressed {sanity_suppressed} obvious false-positive candidate(s)")
 
@@ -583,7 +612,7 @@ async def process_target(
     poc_capable = (
         foundry_on and onchain.available and bool(s.rpc_url) and which("forge") is not None
     )
-    MAX_POCS_PER_TARGET = 3
+    MAX_POCS_PER_TARGET = max(0, int(s.max_pocs_per_target))
     poc_count = 0
     flashsim_on = (
         poc_capable
@@ -592,6 +621,7 @@ async def process_target(
     sim_count = 0
 
     refute_on = _toggle(toggles, "refutation", s.enable_refutation)
+    candidates = sorted(candidates, key=_candidate_priority, reverse=True)
     for i, cand in enumerate(candidates):
         if mgr.is_cancelled(scan_id):
             break
@@ -613,6 +643,9 @@ async def process_target(
                 await asyncio.to_thread(refute_finding, ctx, cand)
                 if (cand.evidence or {}).get("refuted"):
                     _log(scan_id, f"[{address}] refuted: {cand.title[:80]}")
+                    if _toggle(toggles, "pattern_priors", s.enable_pattern_priors) and (cand.evidence or {}).get("refuted_concrete"):
+                        reason = str(((cand.evidence or {}).get("refutation") or {}).get("refutation", ""))
+                        dedup.record_pattern_refutation(cand, reason=reason)
             except Exception as exc:
                 logger.warning("refuter failed on %s: %s", address, exc)
 

@@ -278,17 +278,17 @@ def inspect_fuzz_readiness(source_dir: Path, source_files: dict[str, str]) -> di
     foundry_toml = source_dir / "foundry.toml"
     hardhat_config = any((source_dir / name).exists() for name in ("hardhat.config.ts", "hardhat.config.js"))
     echidna_configs = [
-        str(p.relative_to(source_dir))
+        p.relative_to(source_dir).as_posix()
         for p in source_dir.rglob("*")
         if p.is_file() and p.name.lower() in {"echidna.yaml", "echidna.yml", "echidna.config.yaml"}
     ] if source_dir.exists() else []
     medusa_configs = [
-        str(p.relative_to(source_dir))
+        p.relative_to(source_dir).as_posix()
         for p in source_dir.rglob("*")
         if p.is_file() and p.name.lower() in {"medusa.json", "medusa.yaml", "medusa.yml"}
     ] if source_dir.exists() else []
     halmos_configs = [
-        str(p.relative_to(source_dir))
+        p.relative_to(source_dir).as_posix()
         for p in source_dir.rglob("*")
         if p.is_file() and p.name.lower() in {"halmos.toml", "halmos.config.toml"}
     ] if source_dir.exists() else []
@@ -301,9 +301,9 @@ def inspect_fuzz_readiness(source_dir: Path, source_files: dict[str, str]) -> di
         except OSError:
             continue
         if FUZZ_TEST_RE.search(txt):
-            fuzz_files.append(str(p.relative_to(source_dir)))
+            fuzz_files.append(p.relative_to(source_dir).as_posix())
         if re.search(r"\binvariant_\w+\s*\(", txt):
-            invariant_files.append(str(p.relative_to(source_dir)))
+            invariant_files.append(p.relative_to(source_dir).as_posix())
 
     echidna_properties = len(ECHIDNA_RE.findall(all_text))
     surfaces = infer_surfaces(all_text)

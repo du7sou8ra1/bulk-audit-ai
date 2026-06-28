@@ -127,6 +127,18 @@ export default function Settings() {
             <ToggleRow label="Semgrep" on={data.toggles.semgrep} />
             <ToggleRow label="Foundry" on={data.toggles.foundry} />
             <ToggleRow label="Fuzzing" on={data.toggles.fuzzing} />
+            <ToggleRow label="Bytecode intel" on={data.toggles.bytecode_intel} />
+            <ToggleRow label="Bytecode probes" on={data.toggles.bytecode_probes} />
+            <ToggleRow label="Invariant reasoner" on={data.toggles.invariant_reasoner} />
+            <ToggleRow label="Refutation" on={data.toggles.refutation} />
+            <ToggleRow label="Sourcify" on={data.toggles.sourcify} />
+            <ToggleRow label="Flashloan sim" on={data.toggles.flashloan_sim} />
+            <ToggleRow label="Value context" on={data.toggles.value_context} />
+            <ToggleRow label="Sanity liveness" on={data.toggles.sanity_liveness} />
+            <ToggleRow label="Refuter precision" on={data.toggles.refuter_precision_rules} />
+            <ToggleRow label="Binding hard gate" on={data.toggles.binding_hard_gate} />
+            <ToggleRow label="Critical value gate" on={data.toggles.critical_value_gate} />
+            <ToggleRow label="Pattern priors" on={data.toggles.pattern_priors} />
             <ToggleRow label="DeepSeek" on={data.toggles.deepseek} />
           </div>
 

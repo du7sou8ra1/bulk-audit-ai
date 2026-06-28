@@ -19,6 +19,15 @@ class _InitializedChain:
         return None
 
 
+class _ZeroOwnerChain:
+    available = True
+
+    def call_typed(self, _address, signature, **_kwargs):
+        if signature == "owner()":
+            return "0x0000000000000000000000000000000000000000"
+        return None
+
+
 class _ProxyInfo:
     admin_owner = None
     owner = None
@@ -121,3 +130,113 @@ def test_live_initialized_target_suppresses_initializer_takeover():
     assert apply_candidate_sanity(ctx, [cand]) == 1
     assert cand.evidence["suppressed"] is True
     assert "isInitialized" in cand.evidence["suppressed_reason"]
+
+
+def test_never_initialized_liveness_is_evidence_not_immediate_suppression():
+    ctx = _ctx(
+        """
+        contract Init {
+          address public owner;
+          function initialize(address newOwner) external { owner = newOwner; }
+        }
+        """,
+        onchain=_ZeroOwnerChain(),
+    )
+    cand = FindingCandidate(
+        detector="unprotected_initializer",
+        title="Public initializer writes a privilege slot with no guard: initialize",
+        description="test",
+        impact_score=9.0,
+        confidence_score=8.0,
+        evidence={"function": "initialize"},
+        affected_functions=["initialize"],
+    )
+
+    assert apply_candidate_sanity(ctx, [cand]) == 0
+    assert cand.evidence["never_initialized"] is True
+    assert cand.evidence["liveness_getters"][0]["getter"] == "owner()"
+
+
+def test_amm_factory_one_time_initializer_is_suppressed():
+    ctx = _ctx(
+        """
+        contract CLPool {
+          address public factory;
+          struct Slot0 { uint160 sqrtPriceX96; }
+          Slot0 public slot0;
+          function initialize(uint160 price) external {
+            require(factory == address(0), "AI");
+            require(slot0.sqrtPriceX96 == 0, "AI");
+            factory = msg.sender;
+            slot0.sqrtPriceX96 = price;
+          }
+        }
+        """
+    )
+    cand = FindingCandidate(
+        detector="unprotected_initializer",
+        title="Public initializer writes a privilege slot with no guard: initialize",
+        description="test",
+        impact_score=9.0,
+        confidence_score=8.0,
+        evidence={"function": "initialize"},
+        affected_functions=["initialize"],
+    )
+    assert apply_candidate_sanity(ctx, [cand]) == 1
+    assert "AMM pool one-time" in cand.evidence["suppressed_reason"]
+
+
+def test_caller_bound_transferfrom_binding_refutes_approval_drain():
+    ctx = _ctx(
+        """
+        contract Router {
+          function swap(address token, address to, uint256 amount) external {
+            address from = msg.sender;
+            IERC20(token).transferFrom(from, address(this), amount);
+            IERC20(token).transfer(to, amount);
+          }
+        }
+        """
+    )
+    cand = FindingCandidate(
+        detector="approval_drain",
+        title="transferFrom may drain third-party approvals: swap",
+        description="test",
+        impact_score=9.0,
+        confidence_score=8.0,
+        evidence={
+            "function": "swap",
+            "attacker_control_binding": {"variable": "from", "role": "source"},
+        },
+        affected_functions=["swap"],
+    )
+    assert apply_candidate_sanity(ctx, [cand]) == 1
+    assert cand.evidence["refuted_concrete"] is True
+    assert "caller-bound" in cand.evidence["suppressed_reason"]
+
+
+def test_real_structural_initializer_bug_survives_binding_gate():
+    ctx = _ctx(
+        """
+        contract Init {
+          address public owner;
+          function initialize(address newOwner) external {
+            owner = newOwner;
+          }
+        }
+        """
+    )
+    cand = FindingCandidate(
+        detector="unprotected_initializer",
+        title="Public initializer writes a privilege slot with no guard: initialize",
+        description="test",
+        impact_score=9.0,
+        confidence_score=8.0,
+        evidence={
+            "function": "initialize",
+            "attacker_control_binding": {"variable": "newOwner", "role": "destination"},
+        },
+        affected_functions=["initialize"],
+    )
+    assert apply_candidate_sanity(ctx, [cand]) == 0
+    assert not cand.evidence.get("refuted")

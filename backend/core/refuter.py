@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import logging
 
+from ..config import get_settings
 from ..detectors.base import FindingCandidate, TargetContext
+from .candidate_sanity import deterministic_attacker_binding_refutation
 from .callgraph import CallGraph
 from .llm import chat_json, llm_available
 
@@ -49,6 +51,27 @@ Return ONLY JSON:
  "concrete_mitigation": true|false,
  "reasoning": "brief"}"""
 
+_PRECISION_ADDENDUM = """
+
+Additional precision rules:
+- Caller-bound value: transferFrom(msg.sender, ...) spends the caller's OWN
+  approval and is not an approval drain unless the caller can choose a third
+  party source.
+- Funds-never-persist may refute only when the pull and forward are atomic AND
+  the destination is caller-bound. Do not use this to refute stuck-fund, sweep,
+  arbitrary-recipient, or admin-recipient findings.
+- Self-call guards such as require(msg.sender == address(this)) are concrete
+  reachability controls unless an external function demonstrably sets that
+  context with attacker-chosen calldata.
+- Destination trace matters: theft requires funds to land at an
+  attacker-controlled destination. Fixed admin/treasury/owner-set destinations
+  are trust/centralization risks, not unprivileged theft.
+- Privileged is not automatically a bug: owner/operator/multisig-only paths are
+  out unless the role is publicly obtainable or bypassed.
+- Working mitigations count only when visible in the code slice: one-time init
+  already set, ERC4626 virtual-offset, reentrancy guard on the path, or
+  factory-atomic AMM init."""
+
 # Appended for PROTECTED findings — lead_only OR confirmable detector findings.
 # A deterministic detector already located a specific structural defect, so the
 # skeptic may only KILL it by citing a concrete on-chain control, not by vague
@@ -74,10 +97,6 @@ condition; otherwise false."""
 def refute(ctx: TargetContext, candidate: FindingCandidate, cg: CallGraph | None = None) -> dict:
     """Returns a verdict dict; also mutates candidate.evidence with the result."""
     verdict = {"attempted": False, "is_real": None, "refutation": "", "in_scope": None}
-    if not llm_available():
-        candidate.evidence.setdefault("refutation", {"attempted": False, "reason": "llm unavailable"})
-        return verdict
-
     ev0 = candidate.evidence or {}
     tier = ev0.get("onchain_detectable")
     protected = bool(
@@ -85,7 +104,10 @@ def refute(ctx: TargetContext, candidate: FindingCandidate, cg: CallGraph | None
         or tier in ("lead_only", "confirmable")
         or ev0.get("corroborated")
     )
-    system = _SYSTEM + (_PROTECTED_ADDENDUM if protected else "")
+    system = _SYSTEM
+    if get_settings().enable_refuter_precision_rules:
+        system += _PRECISION_ADDENDUM
+    system += _PROTECTED_ADDENDUM if protected else ""
 
     cg = cg or CallGraph.build(ctx.source_files)
     fn = (candidate.affected_functions or [None])[0]
@@ -93,6 +115,38 @@ def refute(ctx: TargetContext, candidate: FindingCandidate, cg: CallGraph | None
     if not code_slice:
         # Fall back to the candidate's own snippet so the skeptic still has code.
         code_slice = str((candidate.evidence or {}).get("snippet", ""))[:6000]
+
+    if get_settings().enable_binding_hard_gate:
+        reason = deterministic_attacker_binding_refutation(
+            code_slice,
+            candidate.evidence or {},
+            detector=candidate.detector,
+            title=candidate.title,
+        )
+        if reason:
+            candidate.evidence["refutation"] = {
+                "attempted": True,
+                "is_real": False,
+                "in_scope": False,
+                "residual_severity": "none",
+                "concrete_mitigation": True,
+                "refutation": reason,
+                "reasoning": "deterministic attacker-binding hard gate",
+            }
+            candidate.evidence["refuted"] = True
+            candidate.evidence["refuted_concrete"] = True
+            candidate.evidence["refutation_pattern_class"] = "attacker_binding_safe"
+            return {
+                "attempted": True,
+                "is_real": False,
+                "in_scope": False,
+                "residual_severity": "none",
+                "refutation": reason,
+            }
+
+    if not llm_available():
+        candidate.evidence.setdefault("refutation", {"attempted": False, "reason": "llm unavailable"})
+        return verdict
 
     payload = {
         "candidate": {
@@ -105,6 +159,8 @@ def refute(ctx: TargetContext, candidate: FindingCandidate, cg: CallGraph | None
         },
         "contract": ctx.contract_name or ctx.address,
         "code_slice": code_slice,
+        "value_context": (candidate.evidence or {}).get("value_context"),
+        "prior_pattern_refutations": (candidate.evidence or {}).get("prior_pattern_refutations", []),
     }
     res = chat_json(system, payload, timeout=180)
     if res.error or not res.parsed:
@@ -112,6 +168,36 @@ def refute(ctx: TargetContext, candidate: FindingCandidate, cg: CallGraph | None
         return {**verdict, "attempted": True, "error": res.error}
 
     p = res.parsed
+    if get_settings().enable_binding_hard_gate:
+        ev_for_binding = dict(candidate.evidence or {})
+        if isinstance(p.get("attacker_control_binding"), dict):
+            ev_for_binding["attacker_control_binding"] = p.get("attacker_control_binding")
+        reason = deterministic_attacker_binding_refutation(
+            code_slice,
+            ev_for_binding,
+            detector=candidate.detector,
+            title=candidate.title,
+        )
+        if reason:
+            candidate.evidence["refutation"] = {
+                "attempted": True,
+                "is_real": False,
+                "in_scope": False,
+                "residual_severity": "none",
+                "concrete_mitigation": True,
+                "refutation": reason,
+                "reasoning": "deterministic attacker-binding hard gate after refuter",
+            }
+            candidate.evidence["refuted"] = True
+            candidate.evidence["refuted_concrete"] = True
+            candidate.evidence["refutation_pattern_class"] = "attacker_binding_safe"
+            return {
+                "attempted": True,
+                "is_real": False,
+                "in_scope": False,
+                "residual_severity": "none",
+                "refutation": reason,
+            }
     is_real = bool(p.get("is_real", True))
     in_scope = bool(p.get("in_scope", True))
     refutation = str(p.get("refutation", ""))[:2000]

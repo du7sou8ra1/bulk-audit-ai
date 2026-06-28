@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from ..config import get_settings
 from ..detectors.base import FindingCandidate, is_ultra_profile
 from ..models import Classification
 
@@ -115,6 +116,49 @@ def _classify(impact: float, conf: float) -> str:
     return Classification.LOW_OR_INFO
 
 
+def _setting(name: str, default=None):
+    try:
+        return getattr(get_settings(), name, default)
+    except Exception:
+        return default
+
+
+def _enabled(name: str, default: bool = True) -> bool:
+    return bool(_setting(name, default))
+
+
+def _value_context(candidate: FindingCandidate) -> dict:
+    ev = candidate.evidence or {}
+    vc = ev.get("value_context") or {}
+    return vc if isinstance(vc, dict) else {}
+
+
+def _has_critical_value_path(ev: dict) -> bool:
+    """Whether evidence answers: value moves, to whom, controlled by whom."""
+    if ev.get("poc_passed"):
+        return True
+    movement = bool(
+        ev.get("value_at_risk")
+        or ev.get("value_moves")
+        or ev.get("asset")
+        or (isinstance(ev.get("value_context"), dict) and ev["value_context"].get("state") == "has_value")
+    )
+    destination_control = str(ev.get("destination_control") or "").lower()
+    destination = bool(
+        ev.get("attacker_controlled_destination")
+        or destination_control == "attacker_controlled"
+        or ev.get("value_to")
+    )
+    control = bool(
+        ev.get("attacker_control_binding")
+        or ev.get("attacker_controls")
+        or ev.get("user_controlled_target_or_data")
+        or ev.get("open_roles")
+        or ev.get("unguarded")
+    )
+    return movement and destination and control
+
+
 def _tool_agreement(candidate: FindingCandidate, tool_findings: list[dict]) -> bool:
     keywords = _TOOL_AGREEMENT_KEYWORDS.get(candidate.detector, ())
     if not keywords or not tool_findings:
@@ -135,6 +179,21 @@ def score_finding(
     conf = candidate.confidence_score
     ev = candidate.evidence or {}
     notes: list[str] = []
+
+    if _enabled("enable_critical_value_gate"):
+        vc = _value_context(candidate)
+        vc_state = vc.get("state")
+        vc_signal = vc.get("signal")
+        if vc_state == "unknown":
+            notes.append("value context unknown; no severity cap applied")
+        if vc_state == "no_value" and vc_signal == "inert_unreferenced":
+            impact = min(impact, 4.0)
+            conf = min(conf, 2.0)
+            notes.append("capped: value context is inert_unreferenced (no value, no flow, no dependents)")
+        elif ev.get("never_initialized") and vc_state == "no_value" and vc.get("reference_state") == "none":
+            impact = min(impact, 5.0)
+            conf = min(conf, 3.0)
+            notes.append("capped: never-initialized target has no value and no known dependents")
 
     # +2 tool agreement (Slither/Mythril/Semgrep flagged something related).
     if _tool_agreement(candidate, tool_findings):
@@ -235,6 +294,38 @@ def score_finding(
         classification = Classification.FALSE_POSITIVE
     else:
         classification = _classify(impact, conf)
+        if (
+            _enabled("enable_critical_value_gate")
+            and classification
+            in (Classification.CONFIRMED_CRITICAL, Classification.LIKELY_CRITICAL_NEEDS_POC)
+            and _value_context(candidate).get("state") == "no_value"
+            and not _has_critical_value_path(ev)
+        ):
+            classification = Classification.NEEDS_MORE_INVESTIGATION
+            conf = min(conf, 6.0)
+            notes.append(
+                "capped: critical verdict lacks concrete value movement, attacker-controlled destination, "
+                "and control binding"
+            )
+        rare_lead = bool(
+            ev.get("rare_lead")
+            or ev.get("economic_leverage")
+            or ev.get("cross_function")
+            or ev.get("needs_stateful_poc")
+            or ev.get("value_sink")
+        )
+        if (
+            str(_setting("refutation_mode", "hard")).lower() == "soft"
+            and rare_lead
+            and not suppressed
+            and impact >= 7
+            and not ev.get("refuted_concrete")
+        ):
+            conf = max(conf, 3.5)
+            notes.append("soft-refutation floor: rare/economic/cross-function lead remains reviewable")
+            if classification in (Classification.LOW_OR_INFO, Classification.FALSE_POSITIVE):
+                classification = Classification.NEEDS_MORE_INVESTIGATION
+
         if is_lead and not ev.get("refuted"):
             # Floor: keep a high-impact, un-refuted lead at investigation level
             # rather than letting low confidence bury it as info/FP.

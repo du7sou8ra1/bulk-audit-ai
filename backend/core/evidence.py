@@ -69,6 +69,8 @@ def build_ai_packet(
         "proxy_admin_owner": proxy.admin_owner,
         "owner": proxy.owner,
         "implementation": proxy.implementation,
+        "value_context": (candidate.evidence or {}).get("value_context")
+        or ((ctx.tool_outputs.get("value-context") or {}).get("meta")),
     }
 
     # Pull a couple of relevant source snippets.
@@ -102,6 +104,8 @@ def build_ai_packet(
             "admin": proxy.admin,
             "admin_owner": proxy.admin_owner,
             "owner": proxy.owner,
+            "value_context": (candidate.evidence or {}).get("value_context")
+            or ((ctx.tool_outputs.get("value-context") or {}).get("meta")),
             "bytecode": {
                 "runtime_keccak": bytecode_meta.get("runtime_keccak"),
                 "stripped_runtime_keccak": bytecode_meta.get("stripped_runtime_keccak"),

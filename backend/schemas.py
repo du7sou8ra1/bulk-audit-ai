@@ -26,6 +26,15 @@ class ScanToggles(BaseModel):
     bytecode_intel: bool | None = None
     bytecode_probes: bool | None = None
     deepseek: bool | None = None
+    invariant_reasoner: bool | None = None
+    refutation: bool | None = None
+    flashloan_sim: bool | None = None
+    value_context: bool | None = None
+    sanity_liveness: bool | None = None
+    refuter_precision_rules: bool | None = None
+    binding_hard_gate: bool | None = None
+    critical_value_gate: bool | None = None
+    pattern_priors: bool | None = None
 
 
 class TargetInput(BaseModel):

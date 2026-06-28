@@ -18,6 +18,7 @@ import re
 
 from sqlalchemy import select
 
+from ..config import get_settings
 from ..database import SessionLocal
 from ..detectors.base import FindingCandidate
 from ..models import SuppressedFinding
@@ -25,6 +26,22 @@ from ..models import SuppressedFinding
 _WS = re.compile(r"\s+")
 _HEX = re.compile(r"0x[0-9a-fA-F]{4,}")
 _NUM = re.compile(r"\b\d+\b")
+_PATTERN_PREFIX = "pat:"
+_PATTERN_MARKERS = (
+    "transferFrom(msg.sender",
+    "safeTransferFrom(msg.sender",
+    "require(msg.sender==address(this))",
+    "require(msg.sender == address(this))",
+    "factory==address(0)",
+    "factory == address(0)",
+    "slot0.sqrtPriceX96==0",
+    "slot0.sqrtPriceX96 == 0",
+    "onlyOwner",
+    "onlyRole",
+    "nonReentrant",
+    "initializer",
+    "reinitializer",
+)
 
 
 def _norm_title(title: str) -> str:
@@ -45,6 +62,18 @@ def candidate_fingerprint(candidate: FindingCandidate) -> str:
     ev = candidate.evidence or {}
     return fingerprint(candidate.detector, candidate.title,
                        candidate.affected_functions, ev.get("file", ""))
+
+
+def pattern_signature(candidate: FindingCandidate) -> str:
+    """Address-free code-pattern key used as refuter context, not suppression."""
+    ev = candidate.evidence or {}
+    fn = ((candidate.affected_functions or [""])[0] or "").lstrip("_").lower()
+    snippet = _WS.sub("", str(ev.get("snippet", "") or ""))
+    markers = [m.lower().replace(" ", "") for m in _PATTERN_MARKERS if m.lower().replace(" ", "") in snippet.lower()]
+    rule = str(ev.get("rule_id") or ev.get("bug_class") or _norm_title(candidate.title))
+    pattern_class = str(ev.get("refutation_pattern_class") or ev.get("bug_class") or "")
+    base = f"{candidate.detector}|{fn}|{rule}|{pattern_class}|{','.join(sorted(markers))}"
+    return _PATTERN_PREFIX + hashlib.sha1(base.encode("utf-8")).hexdigest()[:40]
 
 
 def _content_key(candidate: FindingCandidate) -> str:
@@ -101,11 +130,40 @@ def apply_suppression(candidate: FindingCandidate, address: str | None = None) -
     """Stamp the candidate with its fingerprint; flag + return True if suppressed."""
     fp = candidate_fingerprint(candidate)
     candidate.evidence["fingerprint"] = fp
+    if get_settings().enable_pattern_priors:
+        candidate.evidence["pattern_fingerprint"] = pattern_signature(candidate)
     suppressed, reason = is_suppressed(fp, address)
     if suppressed:
         candidate.evidence["suppressed"] = True
         candidate.evidence["suppressed_reason"] = reason
-    return suppressed
+        return True
+    if get_settings().enable_pattern_priors:
+        prior, prior_reason = is_suppressed(candidate.evidence["pattern_fingerprint"], None)
+        if prior:
+            candidate.evidence.setdefault("prior_pattern_refutations", []).append(
+                {
+                    "pattern_fingerprint": candidate.evidence["pattern_fingerprint"],
+                    "reason": prior_reason,
+                    "note": "prior pattern context only; this does not auto-suppress the finding",
+                }
+            )
+            candidate.evidence["prior_refutation_reason"] = prior_reason
+    return False
+
+
+def record_pattern_refutation(candidate: FindingCandidate, reason: str = "") -> str:
+    """Store a concrete refutation as pattern wisdom, not an address denylist."""
+    fp = pattern_signature(candidate)
+    if not get_settings().enable_pattern_priors:
+        return fp
+    suppress(
+        fp,
+        address=None,
+        detector=candidate.detector,
+        title=f"pattern prior: {candidate.title}",
+        reason=reason or str((candidate.evidence or {}).get("suppressed_reason") or "concrete pattern refutation"),
+    )
+    return fp
 
 
 def suppress(fp: str, *, address: str | None = None, detector: str = "",

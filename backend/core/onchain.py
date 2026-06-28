@@ -11,6 +11,7 @@ evidence note) instead of raising, so one bad read never aborts a scan.
 from __future__ import annotations
 
 import logging
+import re
 
 from eth_abi import decode as abi_decode
 from eth_abi import encode as abi_encode
@@ -20,6 +21,47 @@ from web3 import Web3
 from ..config import get_settings
 
 logger = logging.getLogger("bulkauditai.onchain")
+ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
+
+_FLOW_NAME_RE = re.compile(
+    r"swap|bridge|relay|route|execute|multicall|forward|deposit|withdraw|redeem|claim|settle",
+    re.I,
+)
+_FLOW_SOURCE_RE = re.compile(
+    r"(safeTransferFrom|transferFrom)\s*\([^;{]{0,160}(msg\.sender|from|payer|owner|src|source)"
+    r"|(\.call\s*(?:\{|\.value|\())|safeTransfer\s*\(|\.transfer\s*\(",
+    re.I,
+)
+_DEPENDENT_HINT_RE = re.compile(
+    r"implementation|logic|facet|module|library|delegate|diamond|strategy|adapter",
+    re.I,
+)
+
+
+def _is_zero_address(value) -> bool:
+    try:
+        return bool(value) and int(str(value), 16) == 0
+    except Exception:
+        return False
+
+
+def _positive_int(value) -> bool:
+    return isinstance(value, int) and value > 0
+
+
+def _abi_value_flow_hint(abi) -> bool:
+    if isinstance(abi, dict):
+        abi = abi.get("abi")
+    if not isinstance(abi, list):
+        return False
+    for item in abi:
+        if not isinstance(item, dict) or item.get("type") != "function":
+            continue
+        if item.get("stateMutability") == "payable":
+            return True
+        if _FLOW_NAME_RE.search(str(item.get("name") or "")):
+            return True
+    return False
 
 # Methods that are explicitly forbidden. Used as a tripwire in tests.
 FORBIDDEN_RPC_METHODS = frozenset(
@@ -126,6 +168,34 @@ class OnchainClient:
             logger.debug("eth_call(%s, %s) failed: %s", to, data[:10], exc)
             return None
 
+    def eth_call_raw_from(
+        self,
+        to: str,
+        data: str,
+        from_addr: str,
+        value: int = 0,
+        block_identifier: str = "latest",
+    ) -> dict:
+        """Read-only eth_call with explicit caller/value context.
+
+        This never sends a transaction. It is used for fork/RPC auth checks where
+        the same calldata should be tested from an unprivileged address.
+        """
+        if not self.w3:
+            return {"ok": None, "error": "rpc unavailable"}
+        try:
+            tx = {
+                "to": self.checksum(to),
+                "from": self.checksum(from_addr),
+                "data": data,
+                "value": int(value or 0),
+            }
+            result = self.w3.eth.call(tx, block_identifier=block_identifier)
+            return {"ok": True, "return": result.hex()}
+        except Exception as exc:
+            logger.debug("eth_call_from(%s, %s, %s) failed: %s", from_addr, to, data[:10], exc)
+            return {"ok": False, "error": str(exc)[:500]}
+
     # ------------------------------------------------------------------ #
     # Typed call helper (no ABI needed)
     # ------------------------------------------------------------------ #
@@ -175,6 +245,141 @@ class OnchainClient:
             except Exception:
                 return val
         return None
+
+    # ------------------------------------------------------------------ #
+    # Generalized value-context probe.
+    # ------------------------------------------------------------------ #
+    def probe_value_context(
+        self,
+        address: str,
+        *,
+        abi=None,
+        source_text: str = "",
+        referenced_by: list[dict] | list[str] | None = None,
+        contract_name: str = "",
+    ) -> dict:
+        """Return conservative value-context evidence for scoring/refutation.
+
+        ``state`` is tri-state: ``has_value``, ``no_value``, or ``unknown``.
+        Unknown, including RPC/read failure, must never cap severity.
+        """
+        evidence = {
+            "state": "unknown",
+            "signal": "unknown",
+            "native_balance_eth": None,
+            "declared_assets": [],
+            "self_asset_balances": [],
+            "totals": {},
+            "value_flow_hint": False,
+            "dependent_hint": False,
+            "referenced_by_count": None if referenced_by is None else len(referenced_by),
+            "reference_state": "unknown" if referenced_by is None else ("present" if referenced_by else "none"),
+            "notes": [],
+        }
+        if not self.available:
+            evidence["notes"].append("rpc unavailable; value context is unknown")
+            return evidence
+
+        read_attempted = False
+        read_failed = False
+
+        try:
+            native = self.get_balance_eth(address)
+        except Exception:
+            native = None
+        read_attempted = True
+        if native is None:
+            read_failed = True
+        else:
+            evidence["native_balance_eth"] = native
+
+        for sig in ("totalAssets()", "totalSupply()"):
+            read_attempted = True
+            try:
+                val = self.call_typed(address, sig, return_types=["uint256"])
+            except Exception:
+                val = None
+            if val is None:
+                read_failed = True
+            else:
+                evidence["totals"][sig[:-2]] = val
+
+        seen_assets: set[str] = set()
+        for sig in ("asset()", "underlying()", "token()"):
+            read_attempted = True
+            try:
+                raw = self.call_typed(address, sig, return_types=["address"])
+            except Exception:
+                raw = None
+            if raw is None:
+                read_failed = True
+                continue
+            if _is_zero_address(raw):
+                evidence["declared_assets"].append({"getter": sig, "address": ZERO_ADDRESS, "zero": True})
+                continue
+            try:
+                asset = self.checksum(raw)
+            except Exception:
+                asset = str(raw)
+            if asset.lower() in seen_assets:
+                continue
+            seen_assets.add(asset.lower())
+            evidence["declared_assets"].append({"getter": sig, "address": asset, "zero": False})
+            read_attempted = True
+            try:
+                bal = self.call_typed(
+                    asset,
+                    "balanceOf(address)",
+                    ["address"],
+                    [self.checksum(address)],
+                    ["uint256"],
+                )
+            except Exception:
+                bal = None
+            if bal is None:
+                read_failed = True
+            else:
+                evidence["self_asset_balances"].append({"asset": asset, "balance": bal})
+
+        source = source_text or ""
+        flow_hint = _abi_value_flow_hint(abi) or bool(_FLOW_SOURCE_RE.search(source))
+        dependent_hint = bool(_DEPENDENT_HINT_RE.search(f"{contract_name}\n{source[:8000]}"))
+        evidence["value_flow_hint"] = flow_hint
+        evidence["dependent_hint"] = dependent_hint
+
+        has_value = (
+            (isinstance(evidence["native_balance_eth"], (int, float)) and evidence["native_balance_eth"] > 0)
+            or any(_positive_int(v) for v in evidence["totals"].values())
+            or any(_positive_int(row.get("balance")) for row in evidence["self_asset_balances"])
+        )
+        if has_value:
+            evidence["state"] = "has_value"
+            evidence["signal"] = "self_holds_value"
+            return evidence
+
+        if not read_attempted or (read_failed and evidence["native_balance_eth"] is None and not evidence["totals"]):
+            evidence["state"] = "unknown"
+            evidence["signal"] = "unknown"
+            evidence["notes"].append("value reads were inconclusive")
+            return evidence
+
+        evidence["state"] = "no_value"
+        if flow_hint:
+            evidence["signal"] = "value_flows_through"
+        elif referenced_by:
+            evidence["signal"] = "value_in_dependents"
+        elif dependent_hint and referenced_by is None:
+            evidence["signal"] = "value_in_dependents"
+            evidence["notes"].append("dependency hint present but no reference index was provided")
+        elif referenced_by == []:
+            evidence["signal"] = "inert_unreferenced"
+            evidence["notes"].append(
+                "no declared/self-held value, no flow hint, and caller supplied an empty dependent-reference set"
+            )
+        else:
+            evidence["signal"] = "unknown"
+            evidence["notes"].append("no dependency index was provided; not treating zero balance as inert")
+        return evidence
 
     def has_role(self, contract: str, role: bytes, account: str) -> bool | None:
         return self.call_typed(

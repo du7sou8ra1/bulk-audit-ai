@@ -46,3 +46,45 @@ def test_suppression_apply_and_scoring():
         for r in db.scalars(select(SuppressedFinding).where(SuppressedFinding.fingerprint == fp)).all():
             db.delete(r)
         db.commit()
+
+
+def test_pattern_prior_surfaces_without_auto_suppressing():
+    init_db()
+    cand = FindingCandidate(
+        detector="approval_drain",
+        title="transferFrom may drain approvals",
+        description="d",
+        impact_score=8.0,
+        confidence_score=6.0,
+        affected_functions=["swap"],
+        evidence={
+            "snippet": "address from = msg.sender; token.transferFrom(from,address(this),amount);",
+            "bug_class": "approval_drain",
+            "refutation_pattern_class": "caller_bound_source",
+        },
+    )
+    pattern_fp = dedup.record_pattern_refutation(cand, reason="caller-bound transferFrom source")
+    cand2 = FindingCandidate(
+        detector="approval_drain",
+        title="transferFrom may drain approvals",
+        description="d",
+        impact_score=8.0,
+        confidence_score=6.0,
+        affected_functions=["swap"],
+        evidence={
+            "snippet": "address from = msg.sender; token.transferFrom(from,address(this),amount);",
+            "bug_class": "approval_drain",
+            "refutation_pattern_class": "caller_bound_source",
+        },
+    )
+
+    assert dedup.apply_suppression(cand2, "0xBBBB") is False
+    assert not cand2.evidence.get("suppressed")
+    assert cand2.evidence["pattern_fingerprint"] == pattern_fp
+    assert cand2.evidence["prior_pattern_refutations"]
+    assert "caller-bound" in cand2.evidence["prior_refutation_reason"]
+
+    with SessionLocal() as db:
+        for r in db.scalars(select(SuppressedFinding).where(SuppressedFinding.fingerprint == pattern_fp)).all():
+            db.delete(r)
+        db.commit()

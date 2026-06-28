@@ -85,3 +85,65 @@ def test_ultra_deep_floor_keeps_refuted_structural_lead():
     v2 = score_finding(cand, [], profile="ultra-deep-v2")
     assert v2.confidence_score >= 4.0
     assert v2.classification == Classification.NEEDS_MORE_INVESTIGATION
+
+
+def test_inert_unreferenced_value_context_caps_severity():
+    cand = FindingCandidate(
+        detector="approval_drain",
+        title="approval drain",
+        description="x",
+        impact_score=9.0,
+        confidence_score=8.0,
+        severity_candidate="critical",
+        evidence={
+            "value_context": {
+                "state": "no_value",
+                "signal": "inert_unreferenced",
+                "reference_state": "none",
+            }
+        },
+    )
+    result = score_finding(cand, [])
+    assert result.classification == Classification.LOW_OR_INFO
+    assert result.impact_score <= 4.0
+    assert any("inert_unreferenced" in note for note in result.score_notes)
+
+
+def test_unknown_value_context_never_caps_severity():
+    cand = FindingCandidate(
+        detector="proxy_upgrade",
+        title="Unprotected upgradeTo",
+        description="x",
+        impact_score=9.0,
+        confidence_score=8.0,
+        severity_candidate="critical",
+        evidence={
+            "has_access_control": False,
+            "unguarded": ["upgradeTo"],
+            "value_context": {"state": "unknown", "signal": "unknown"},
+        },
+    )
+    result = score_finding(cand, [])
+    assert result.classification == Classification.CONFIRMED_CRITICAL
+    assert any("unknown" in note for note in result.score_notes)
+
+
+def test_never_initialized_caps_only_when_no_value_and_no_dependents():
+    cand = FindingCandidate(
+        detector="unprotected_initializer",
+        title="initializer",
+        description="x",
+        impact_score=9.0,
+        confidence_score=8.0,
+        severity_candidate="critical",
+        evidence={
+            "never_initialized": True,
+            "value_context": {"state": "no_value", "signal": "unknown", "reference_state": "none"},
+        },
+    )
+    capped = score_finding(cand, [])
+    assert capped.classification == Classification.LOW_OR_INFO
+
+    cand.evidence["value_context"] = {"state": "unknown", "signal": "unknown"}
+    unknown = score_finding(cand, [])
+    assert unknown.classification == Classification.CONFIRMED_CRITICAL

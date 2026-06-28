@@ -58,7 +58,15 @@ class Settings(BaseSettings):
     enable_invariant_reasoner: bool = Field(default=True, alias="ENABLE_INVARIANT_REASONER")
     enable_refutation: bool = Field(default=True, alias="ENABLE_REFUTATION")
     enable_sourcify: bool = Field(default=True, alias="ENABLE_SOURCIFY")
+    enable_value_context: bool = Field(default=True, alias="ENABLE_VALUE_CONTEXT")
+    enable_sanity_liveness: bool = Field(default=True, alias="ENABLE_SANITY_LIVENESS")
+    enable_refuter_precision_rules: bool = Field(default=True, alias="ENABLE_REFUTER_PRECISION_RULES")
+    enable_binding_hard_gate: bool = Field(default=True, alias="ENABLE_BINDING_HARD_GATE")
+    enable_critical_value_gate: bool = Field(default=True, alias="ENABLE_CRITICAL_VALUE_GATE")
+    enable_pattern_priors: bool = Field(default=True, alias="ENABLE_PATTERN_PRIORS")
     max_hypotheses_per_target: int = Field(default=8, alias="MAX_HYPOTHESES_PER_TARGET")
+    max_pocs_per_target: int = Field(default=3, alias="MAX_POCS_PER_TARGET")
+    refutation_mode: str = Field(default="hard", alias="REFUTATION_MODE")
     # Fork oracle/flash-loan manipulation simulator (needs ENABLE_FOUNDRY + RPC).
     enable_flashloan_sim: bool = Field(default=True, alias="ENABLE_FLASHLOAN_SIM")
     max_sims_per_target: int = Field(default=2, alias="MAX_SIMS_PER_TARGET")
@@ -66,7 +74,7 @@ class Settings(BaseSettings):
     # --- Monitoring ("before-drain") + alerting ----------------------------- #
     enable_monitor: bool = Field(default=False, alias="ENABLE_MONITOR")
     monitor_interval_seconds: int = Field(default=300, alias="MONITOR_INTERVAL_SECONDS")
-    monitor_scan_profile: str = Field(default="deep", alias="MONITOR_SCAN_PROFILE")
+    monitor_scan_profile: str = Field(default="ultra-deep-v2", alias="MONITOR_SCAN_PROFILE")
     # Cap auto-onboarded contracts per deployer-watch cycle (prolific factories).
     max_new_deploys_per_check: int = Field(default=25, alias="MAX_NEW_DEPLOYS_PER_CHECK")
     # Outbound webhook for alerts (Slack/Discord/Telegram-compatible or generic JSON).
@@ -158,6 +166,7 @@ def masked_settings() -> dict:
             "min_interval_seconds": s.ai_min_interval_seconds,
             "max_retries": s.ai_max_retries,
             "retry_backoff_seconds": s.ai_retry_backoff_seconds,
+            "refutation_mode": s.refutation_mode,
         },
         "toggles": {
             "slither": s.enable_slither,
@@ -172,10 +181,19 @@ def masked_settings() -> dict:
             "refutation": s.enable_refutation,
             "sourcify": s.enable_sourcify,
             "flashloan_sim": s.enable_flashloan_sim,
+            "value_context": s.enable_value_context,
+            "sanity_liveness": s.enable_sanity_liveness,
+            "refuter_precision_rules": s.enable_refuter_precision_rules,
+            "binding_hard_gate": s.enable_binding_hard_gate,
+            "critical_value_gate": s.enable_critical_value_gate,
+            "pattern_priors": s.enable_pattern_priors,
         },
         "limits": {
             "max_parallel_scans": s.max_parallel_scans,
             "max_parallel_targets": s.max_parallel_targets,
+            "max_hypotheses_per_target": s.max_hypotheses_per_target,
+            "max_pocs_per_target": s.max_pocs_per_target,
+            "max_sims_per_target": s.max_sims_per_target,
             "mythril_timeout": s.mythril_timeout,
             "slither_timeout": s.slither_timeout,
             "semgrep_timeout": s.semgrep_timeout,
