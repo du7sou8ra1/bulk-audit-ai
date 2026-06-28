@@ -16,6 +16,9 @@ from .base import RunnerResult
 
 logger = logging.getLogger("bulkauditai.mythril")
 
+MAX_EFFECTIVE_TIMEOUT = 90
+MAX_BYTECODE_FALLBACK_BYTES = 12_000
+
 HIGH_VALUE_TITLES = (
     "delegatecall",
     "selfdestruct",
@@ -61,14 +64,15 @@ def run_mythril(
     *,
     bytecode: str | None = None,
     solc_version: str | None = None,
-    timeout: int = 300,
+    timeout: int = MAX_EFFECTIVE_TIMEOUT,
 ) -> RunnerResult:
     exe = _myth_executable()
     if exe is None:
         return RunnerResult.skipped("mythril", "mythril not installed (pip install mythril)")
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    exec_timeout = max(30, timeout - 30)
+    effective_timeout = _effective_timeout(timeout)
+    exec_timeout = max(15, effective_timeout - 10)
 
     if main_source and main_source.exists():
         source_res, source_json = _run_source(
@@ -77,17 +81,22 @@ def run_mythril(
             out_dir,
             solc_version=solc_version,
             exec_timeout=exec_timeout,
-            timeout=timeout,
+            timeout=effective_timeout,
         )
         if _parsed_success(source_json):
             return _finish(source_res, source_json, main_source.name)
         if not source_res.timed_out and bytecode:
+            if _bytecode_too_large(bytecode):
+                finished_source = _finish(source_res, source_json, main_source.name)
+                finished_source.meta["bytecode_fallback_skipped"] = "too_large"
+                finished_source.summary += "; bytecode fallback skipped: " + _large_bytecode_reason(bytecode)
+                return finished_source
             bytecode_res, bytecode_json = _run_bytecode(
                 exe,
                 bytecode,
                 out_dir,
                 exec_timeout=exec_timeout,
-                timeout=timeout,
+                timeout=effective_timeout,
             )
             if _parsed_success(bytecode_json):
                 finished = _finish(bytecode_res, bytecode_json, "runtime bytecode")
@@ -99,16 +108,45 @@ def run_mythril(
         return _finish(source_res, source_json, main_source.name)
 
     if bytecode:
+        if _bytecode_too_large(bytecode):
+            skipped = RunnerResult.skipped("mythril", _large_bytecode_reason(bytecode))
+            skipped.meta["bytecode_fallback_skipped"] = "too_large"
+            return skipped
         bytecode_res, bytecode_json = _run_bytecode(
             exe,
             bytecode,
             out_dir,
             exec_timeout=exec_timeout,
-            timeout=timeout,
+            timeout=effective_timeout,
         )
         return _finish(bytecode_res, bytecode_json, "runtime bytecode")
 
     return RunnerResult.skipped("mythril", "no source file or bytecode to analyze")
+
+
+def _effective_timeout(timeout: int | None) -> int:
+    try:
+        requested = int(timeout or MAX_EFFECTIVE_TIMEOUT)
+    except (TypeError, ValueError):
+        requested = MAX_EFFECTIVE_TIMEOUT
+    return max(30, min(requested, MAX_EFFECTIVE_TIMEOUT))
+
+
+def _clean_bytecode(bytecode: str | None) -> str:
+    clean = (bytecode or "").strip()
+    return clean[2:] if clean.startswith("0x") else clean
+
+
+def _bytecode_too_large(bytecode: str | None) -> bool:
+    return len(_clean_bytecode(bytecode)) // 2 > MAX_BYTECODE_FALLBACK_BYTES
+
+
+def _large_bytecode_reason(bytecode: str | None) -> str:
+    size = len(_clean_bytecode(bytecode)) // 2
+    return (
+        f"runtime bytecode too large for fast Mythril pass "
+        f"({size} bytes > {MAX_BYTECODE_FALLBACK_BYTES} bytes)"
+    )
 
 
 def _run_source(
@@ -146,9 +184,7 @@ def _run_bytecode(
     timeout: int,
 ) -> tuple[RunnerResult, dict | None]:
     bc_file = out_dir / "runtime.hex"
-    clean_bytecode = (bytecode or "").strip()
-    if clean_bytecode.startswith("0x"):
-        clean_bytecode = clean_bytecode[2:]
+    clean_bytecode = _clean_bytecode(bytecode)
     bc_file.write_text(clean_bytecode, encoding="utf-8")
     args = [
         exe,

@@ -64,7 +64,7 @@ backend/outputs/scans/<scan_id>/<address>/
 | Tool | Purpose | Notes |
 |------|---------|-------|
 | Slither | Static Solidity analysis | Runs from a neutral cwd to avoid Foundry project confusion. |
-| Mythril | Symbolic execution / bytecode fallback | Source compile can fail; bytecode fallback is used when possible. |
+| Mythril | Symbolic execution / bytecode fallback | Bounded fast pass; large runtime bytecode fallback is skipped so scans do not stall. |
 | Semgrep | Solidity pattern rules | Used as corroboration, not proof. |
 | Foundry | Read-only fork PoCs and simulations | Never broadcasts; private keys and broadcast commands are blocked. |
 | Fuzzing / invariants | Starter suites and detector-focused invariant harnesses | Generates harnesses/scaffolds; a scaffold is not counted as a passed PoC. |

@@ -406,20 +406,31 @@ async def process_target(
                 "mappings": len(ctx.semantic.mappings),
             },
         }
-        ctx.taint = analyze_taint(ctx.semantic)
-        tool_outputs["taint"] = {
-            "status": "ok",
-            "findings": [],
-            "meta": _taint_summary(ctx.taint),
-        }
     except Exception as exc:
         logger.warning("semantic index failed for %s: %s", address, exc)
         ctx.semantic = None
+        ctx.taint = None
         tool_outputs["semantic-index"] = {
             "status": "failed",
             "findings": [],
             "meta": {"error": str(exc)[:500]},
         }
+    else:
+        try:
+            ctx.taint = analyze_taint(ctx.semantic)
+            tool_outputs["taint"] = {
+                "status": "ok",
+                "findings": [],
+                "meta": _taint_summary(ctx.taint),
+            }
+        except Exception as exc:
+            logger.warning("taint analysis failed for %s: %s", address, exc)
+            ctx.taint = None
+            tool_outputs["taint"] = {
+                "status": "failed",
+                "findings": [],
+                "meta": {"error": str(exc)[:500]},
+            }
 
     if _toggle(toggles, "value_context", s.enable_value_context):
         try:
@@ -943,6 +954,80 @@ async def _run_tool(
         scan_id,
         {"type": "tool_update", "target_id": target_id, "tool": tool, "status": res.status, "summary": res.summary},
     )
+
+
+def _taint_summary(report) -> dict:
+    flows = list(getattr(report, "flows", []) or [])
+    sink_counts: dict[str, int] = defaultdict(int)
+    source_counts: dict[str, int] = defaultdict(int)
+    top_flows = []
+    high_confidence = 0
+    cross_function = 0
+
+    for flow in flows:
+        sink_kind = str(getattr(flow, "sink_kind", "unknown") or "unknown")
+        source_kind = str(getattr(flow, "source_kind", "unknown") or "unknown")
+        sink_counts[sink_kind] += 1
+        source_counts[source_kind] += 1
+        confidence = float(getattr(flow, "confidence", 0.0) or 0.0)
+        if confidence >= 0.75:
+            high_confidence += 1
+        if bool(getattr(flow, "cross_function", False)):
+            cross_function += 1
+        if len(top_flows) < 12:
+            top_flows.append({
+                "entrypoint": getattr(flow, "entrypoint", ""),
+                "function": getattr(flow, "function", ""),
+                "source": getattr(flow, "source", ""),
+                "source_kind": source_kind,
+                "sink": getattr(flow, "sink", ""),
+                "sink_kind": sink_kind,
+                "confidence": round(confidence, 3),
+                "cross_function": bool(getattr(flow, "cross_function", False)),
+            })
+
+    return {
+        "flow_count": len(flows),
+        "sink_kinds": dict(sorted(sink_counts.items())),
+        "source_kinds": dict(sorted(source_counts.items())),
+        "high_confidence": high_confidence,
+        "cross_function": cross_function,
+        "top_flows": top_flows,
+    }
+
+
+def _candidate_priority(cand) -> float:
+    evidence = cand.evidence or {}
+    severity_bonus = {
+        "critical": 18.0,
+        "high": 12.0,
+        "medium": 6.0,
+        "low": 1.0,
+        "info": 0.0,
+    }.get(str(cand.severity_candidate or "").lower(), 0.0)
+
+    score = float(cand.impact_score or 0.0) * 10.0
+    score += float(cand.confidence_score or 0.0) * 4.0
+    score += severity_bonus
+
+    if evidence.get("corroborated"):
+        score += 12.0 + min(6.0, len(evidence.get("corroborated_by") or []))
+    if evidence.get("unprivileged") or evidence.get("attacker_controlled") or evidence.get("user_controlled_target_or_data"):
+        score += 8.0
+    if evidence.get("value_movement") or evidence.get("attacker_destination_control"):
+        score += 6.0
+    if evidence.get("economic_leverage") or evidence.get("exploit_class"):
+        score += 4.0
+
+    score += min(6.0, len(cand.next_tests or []) * 1.5)
+    score += min(4.0, len(cand.affected_functions or []))
+
+    if evidence.get("suppressed") or evidence.get("refuted"):
+        score -= 40.0
+    if evidence.get("informational"):
+        score -= 20.0
+
+    return score
 
 
 def _skip_runner(tool: str, reason: str):

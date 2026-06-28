@@ -83,7 +83,7 @@ class Settings(BaseSettings):
     # --- Limits / timeouts --------------------------------------------------
     max_parallel_scans: int = Field(default=2, alias="MAX_PARALLEL_SCANS")
     max_parallel_targets: int = Field(default=3, alias="MAX_PARALLEL_TARGETS")
-    mythril_timeout: int = Field(default=300, alias="MYTHRIL_TIMEOUT")
+    mythril_timeout: int = Field(default=90, alias="MYTHRIL_TIMEOUT")
     slither_timeout: int = Field(default=180, alias="SLITHER_TIMEOUT")
     semgrep_timeout: int = Field(default=120, alias="SEMGREP_TIMEOUT")
     foundry_timeout: int = Field(default=300, alias="FOUNDRY_TIMEOUT")

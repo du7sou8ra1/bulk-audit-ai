@@ -4,14 +4,16 @@ running loop) must schedule onto the captured main loop, not raise
 Run: PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest tests/test_scan_manager.py -q
 """
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
 from sqlalchemy import select
 
 from backend.api import scans as scan_api
-from backend.core.scanner import _finding_slug, manager
+from backend.core.scanner import _candidate_priority, _finding_slug, _taint_summary, manager
 from backend.database import SessionLocal, init_db
+from backend.detectors.base import FindingCandidate
 from backend.models import Scan, ScanStatus, Target
 
 
@@ -22,6 +24,70 @@ def test_finding_slug_is_path_safe():
     assert "/" not in s and " " not in s
     assert s == "invariant_reasoner_6_processRollup___processRollupProof"
     assert _finding_slug("zk_verifier", 0, None) == "zk_verifier_0_x"
+
+
+def test_taint_summary_counts_flow_shapes():
+    report = SimpleNamespace(
+        flows=[
+            SimpleNamespace(
+                entrypoint="claim",
+                function="_pay",
+                source="payload",
+                source_kind="calldata",
+                sink="safeTransfer",
+                sink_kind="value_transfer",
+                confidence=0.82,
+                cross_function=True,
+            ),
+            SimpleNamespace(
+                entrypoint="claim",
+                function="_pay",
+                source="id",
+                source_kind="calldata",
+                sink="write:processed",
+                sink_kind="replay_marker",
+                confidence=0.55,
+                cross_function=True,
+            ),
+        ]
+    )
+
+    summary = _taint_summary(report)
+    assert summary["flow_count"] == 2
+    assert summary["sink_kinds"] == {"replay_marker": 1, "value_transfer": 1}
+    assert summary["source_kinds"] == {"calldata": 2}
+    assert summary["high_confidence"] == 1
+    assert summary["cross_function"] == 2
+
+
+def test_candidate_priority_prefers_high_signal_over_refuted_noise():
+    high = FindingCandidate(
+        detector="zk_verifier",
+        title="proof-bound value mismatch",
+        description="x",
+        impact_score=9.0,
+        confidence_score=6.0,
+        severity_candidate="critical",
+        evidence={
+            "corroborated": True,
+            "corroborated_by": ["semantic_taint", "invariant_reasoner"],
+            "unprivileged": True,
+            "value_movement": True,
+        },
+        next_tests=["fork invariant"],
+        affected_functions=["processRollup"],
+    )
+    refuted = FindingCandidate(
+        detector="approval_drain",
+        title="refuted drain",
+        description="x",
+        impact_score=9.5,
+        confidence_score=8.0,
+        severity_candidate="critical",
+        evidence={"refuted": True},
+    )
+
+    assert _candidate_priority(high) > _candidate_priority(refuted)
 
 
 def test_start_scan_from_worker_thread(monkeypatch):
