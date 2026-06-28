@@ -1,8 +1,10 @@
 # BulkAuditAI
 
-Bulk-triage Ethereum smart contracts for **critical vulnerability candidates**, using
-static analysis, read-only on-chain checks, custom detectors, optional fork
-simulations, and a strict **DeepSeek** AI review layer.
+Bulk-triage EVM smart contracts for **critical vulnerability candidates**, using
+static analysis, read-only on-chain checks, bytecode intelligence, custom
+2020-2026 exploit detectors, invariant/fuzz scaffolding, optional fork
+simulations, adversarial refutation, and a strict **DeepSeek/OpenAI-compatible**
+AI review layer.
 
 > **Defensive security research & bug-bounty triage only.**
 > It never sends transactions, never needs a private key, never exploits live
@@ -18,8 +20,10 @@ simulations, and a strict **DeepSeek** AI review layer.
 1. Paste many contract addresses → pick a chain + scan profile → start a bulk scan.
 2. Watch progress live (WebSocket), per-target and per-tool.
 3. For each contract: fetch verified source/ABI/bytecode, resolve proxy →
-   implementation → admin/owner, run Slither/Mythril/Semgrep + custom detectors,
-   probe roles on-chain, score, and ask DeepSeek to classify.
+   implementation → admin/owner, run Slither/Mythril/Semgrep, bytecode intel,
+   bytecode probes, custom detectors, invariant reasoning, optional fuzz/fork
+   scaffolds, read-only value-context probes, adversarial refutation, scoring,
+   and DeepSeek/OpenAI-compatible AI triage.
 4. Review findings with **two scores** (impact 0–10 and confidence 0–10) and a
    classification: `CONFIRMED_CRITICAL`, `LIKELY_CRITICAL_NEEDS_POC`,
    `NEEDS_MORE_INVESTIGATION`, `LOW_OR_INFO`, `FALSE_POSITIVE`.
@@ -32,11 +36,15 @@ simulations, and a strict **DeepSeek** AI review layer.
 ```
 FastAPI backend (asyncio scan worker, SQLite)  ──WebSocket──►  React + Vite + Tailwind UI
         │
-        ├─ source_fetcher  (Etherscan v2)        ├─ detectors/  (framework + 5 MVP detectors + stubs)
-        ├─ proxy_resolver  (EIP-1967 slots)      ├─ runners/    (slither, mythril, semgrep, foundry)
-        ├─ onchain         (read-only RPC)        ├─ scoring     (impact/confidence → classification)
-        ├─ evidence        (workspace + packets)  ├─ ai_reviewer (DeepSeek, strict)
-        └─ exporter / report_writer               └─ scanner     (pipeline orchestrator)
+        ├─ source_fetcher  (Etherscan v2 + Sourcify fallback)
+        ├─ proxy_resolver  (EIP-1967 slots + admin/owner reads)
+        ├─ onchain         (read-only RPC, eth_call, storage/balance/code reads)
+        ├─ bytecode_intel / bytecode_probes
+        ├─ detectors/      (deep, ultra-deep, ultra-deep-v2 exploit classes)
+        ├─ runners/        (slither, mythril, semgrep, foundry/fuzz scaffolds)
+        ├─ invariant_reasoner / refuter / ai_reviewer
+        ├─ scoring         (impact/confidence + precision guardrails)
+        └─ evidence / exporter / report_writer / scanner
 ```
 
 Per-scan **isolated workspace** (never overwrites old scans):
@@ -45,6 +53,43 @@ Per-scan **isolated workspace** (never overwrites old scans):
 backend/outputs/scans/<scan_id>/<address>/
   source/  tools/{slither,mythril,semgrep,foundry}/  evidence/  ai/  reports/
 ```
+
+---
+
+## Tool and detector stack
+
+### External analyzers
+
+| Tool | Purpose | Notes |
+|------|---------|-------|
+| Slither | Static Solidity analysis | Runs from a neutral cwd to avoid Foundry project confusion. |
+| Mythril | Symbolic execution / bytecode fallback | Source compile can fail; bytecode fallback is used when possible. |
+| Semgrep | Solidity pattern rules | Used as corroboration, not proof. |
+| Foundry | Read-only fork PoCs and simulations | Never broadcasts; private keys and broadcast commands are blocked. |
+| Fuzzing / invariants | Starter suites and detector-focused invariant harnesses | Generates harnesses/scaffolds; a scaffold is not counted as a passed PoC. |
+| DeepSeek/OpenAI-compatible model | Triage, invariant hypotheses, adversarial refutation | Uses strict prompts and post-processing guardrails. |
+
+### Built-in analysis layers
+
+- Source and ABI fetch: Etherscan v2 first, Sourcify fallback when enabled.
+- Proxy intelligence: EIP-1967 implementation/admin slots, owner/admin classifier, proxy/implementation merge.
+- Bytecode intelligence: selector clusters, opcode risk signals, closed-source surface hints.
+- Bytecode probes: selector-specific fork probe plans for high-risk bytecode surfaces.
+- 2020-2026 exploit detectors: bridge replay/domain binding, settlement-boundary mismatch, zero-value transfer reward stacking, ERC777 hook accounting, read-only reserve reentrancy, unsafe mint math, CLMM tick boundary rounding, lending donation exchange-rate manipulation, verifier spoofing, upgrade/admin blast radius, and more.
+- Invariant reasoner: LLM-assisted cross-function hypotheses over value-moving entrypoints.
+- Adversarial refuter: independent review pass that tries to disprove each candidate before final scoring.
+- Value-context probe: read-only balance/asset/totalSupply/totalAssets checks plus ABI/source value-flow hints. Unknown RPC data never suppresses a bug by itself.
+- Precision guardrails: caller-bound `transferFrom(msg.sender, ...)` false-positive gate, critical-value gate, and pattern-prior context.
+
+### Precision guardrails added in the latest upgrade
+
+- Critical claims must answer: what value moves, where it moves, and why the destination is attacker-controlled.
+- AI/refuter output must cite attacker-control bindings instead of inventing them.
+- Caller-bound transfer sources such as `from = msg.sender` are deterministically refuted for approval-drain claims.
+- `value_context.state = unknown` is never treated as proof that a target is safe.
+- `value_context.state = no_value` with `signal = inert_unreferenced` can cap severity for obviously inert contracts.
+- Prior concrete refutations can be attached as context in later scans without automatically suppressing new findings.
+- PoC generation now prioritizes higher-impact, corroborated, rare, cross-function, and economic-leverage candidates first.
 
 ---
 
@@ -104,7 +149,25 @@ ENABLE_SLITHER=true
 ENABLE_MYTHRIL=true
 ENABLE_SEMGREP=true
 ENABLE_FOUNDRY=false
+ENABLE_FUZZING=false
 ENABLE_DEEPSEEK=true
+
+ENABLE_BYTECODE_INTEL=true
+ENABLE_BYTECODE_PROBES=true
+ENABLE_INVARIANT_REASONER=true
+ENABLE_REFUTATION=true
+ENABLE_SOURCIFY=true
+ENABLE_VALUE_CONTEXT=true
+ENABLE_SANITY_LIVENESS=true
+ENABLE_REFUTER_PRECISION_RULES=true
+ENABLE_BINDING_HARD_GATE=true
+ENABLE_CRITICAL_VALUE_GATE=true
+ENABLE_PATTERN_PRIORS=true
+REFUTATION_MODE=hard              # hard|soft
+MAX_HYPOTHESES_PER_TARGET=8
+MAX_POCS_PER_TARGET=3
+ENABLE_FLASHLOAN_SIM=true
+MAX_SIMS_PER_TARGET=2
 ```
 
 Secrets are read from `.env` only. They are **never stored in SQLite** and are
@@ -139,7 +202,7 @@ cd .. && python -m backend.main                # serves the UI at / on :8791
 ### CLI
 
 ```bash
-python -m backend.main scan --addresses addresses.txt --profile standard
+python -m backend.main scan --addresses addresses.txt --profile ultra-deep-v2
 python -m backend.main scan-one 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48
 python -m backend.main export --scan-id 1 --format zip
 ```
@@ -218,34 +281,47 @@ HTTP basic-auth or an allowlist.
 
 ## Scan profiles
 
-| Profile | Detectors |
-|---------|-----------|
-| `quick` | proxy upgrade, arbitrary call |
-| `standard` | the 5 MVP detectors |
-| `deep` | all detectors (incl. stubs) |
-| `governance-focused` | governance blast radius, timelock roles, proxy upgrade |
-| `zk-focused` | MVP + ZK verifier (stub) |
-| `privacy-pool-focused` | MVP + privacy pool (stub) |
-| `bridge-focused` | MVP + bridge accounting |
+| Profile | What runs | Best use |
+|---------|-----------|----------|
+| `deep` | Core detector set and standard tooling | Faster triage, lower noise. |
+| `ultra-deep` | `deep` plus additional exploit-family detectors | Stronger audit pass when source is verified. |
+| `ultra-deep-v2` | `deep` + `ultra-deep` + corpus, bytecode, bridge, ZK, oracle, accounting, hook, settlement, and 2026 exploit-class detectors | Strongest current model. Use this for serious exploited-contract regression tests and bounty-style review. |
 
-### Detector status
+`ultra-deep-v2` is currently the most powerful profile. It includes the older
+`deep` and `ultra-deep` detector families plus the newer bytecode/corpus/2026
+classes and precision layers.
 
-**Fully implemented:** `proxy_upgrade`, `timelock_roles`, `arbitrary_call`,
-`permit_misuse`, `governance_blast_radius`, `bridge_accounting` (v0.2).
+### Main detector families
 
-**Stubs (framework only, return no findings — TODOs inside):** `delegatecall`,
-`access_control`, `token_logic`, `zk_verifier`, `privacy_pool`.
+- Access control, owner/admin/timelock roles, governance blast radius.
+- Proxy upgrade and uninitialized/reinitializable proxy surfaces.
+- Arbitrary calls, delegatecall, multisig delegatecall payloads, self-call auth bypass.
+- Permit/signature replay, ECDSA/ecrecover zero-address, EIP-1271 spoofing.
+- Bridge accounting, retry/domain binding, keeper mutation, zero-root acceptance, cross-chain source auth.
+- ZK/settlement-boundary mismatch, verifier address spoofing, single-verifier bridge config.
+- Token/accounting logic: zero-value transfer reward checkpoint, zero-value transferFrom bypass, component share accounting, vault donation inflation, lending exchange-rate donation, unsafe mint math.
+- Hooks and callback risks: ERC777 balance bypass, hook callback auth, pair burn/sync issues, receiver-hook credit, deposit callback CEI.
+- Oracle and market math: thin-liquidity spot oracle, read-only reserve reentrancy, CLMM tick boundary rounding, invariant precision loss, decimal unit mismatch.
+- 2026 classes: settlement count/boundary mismatch, flawed zero-value transfer reward stacking, callback payer/proof binding, memory-vs-storage persistence, signer allowlist, fee-on-transfer swap bounds, asymmetric SafeMath, and more.
 
-### Auto-PoC (v0.2)
+### Per-scan toggles
 
-When `ENABLE_FOUNDRY=true`, `forge` is installed, and an RPC is configured,
-strong eligible candidates get an auto-generated **read-only fork PoC** that asks
-whether an unprivileged caller can invoke the privileged selector. The PoC runs
-only on a local fork (never broadcasts; ffi/keys disabled), and `poc_passed` is
-set **only when forge confirms a test actually executed and succeeded** — a
-passing PoC is what lets a finding reach `CONFIRMED_CRITICAL`.
+The New Scan page can enable/disable: Slither, Mythril, Semgrep, Foundry, fuzzing,
+bytecode intel, bytecode probes, DeepSeek review, invariant reasoner, refutation,
+flashloan simulations, value-context, sanity liveness, binding hard gate, and
+pattern priors. Server defaults are shown on the Settings page.
 
----
+### Auto-PoC and fuzzing
+
+When `ENABLE_FOUNDRY=true`, `forge` is installed, and an RPC is configured, strong
+eligible candidates get generated read-only fork PoCs. `MAX_POCS_PER_TARGET`
+controls the cap. The scanner prioritizes higher-impact, corroborated,
+economic, rare, cross-function, and PoC-ready candidates before spending PoC
+budget.
+
+Fuzzing currently generates readiness reports, starter suites, and
+detector-focused invariant harnesses. These are validation scaffolds; they are
+not counted as passed exploits unless a real assertion/test succeeds.
 
 ## Scoring & classification
 
@@ -263,14 +339,24 @@ otherwise                      → LOW_OR_INFO
 
 **AI guardrail:** DeepSeek cannot return `CONFIRMED_CRITICAL` unless the evidence
 already shows a reproducible unauthorized path (open on-chain role, unguarded
-selector, or a passing fork/eth_call PoC) — otherwise it is auto-downgraded.
+selector, or a passing fork/eth_call PoC) - otherwise it is auto-downgraded.
+
+**Critical-value guard:** critical theft claims must show the value movement
+triad: asset/value moved, destination, and attacker control of that destination.
+If that triad is missing, the result is capped to `NEEDS_MORE_INVESTIGATION`.
+
+**Rare-lead handling:** `lead_only` findings and high-impact unrefuted structural
+leads are kept visible at investigation level instead of being buried as info.
+`REFUTATION_MODE=soft` can also keep rare/economic/cross-function leads visible
+when you prefer discovery over aggressive suppression.
 
 ---
 
 ## Safety constraints (enforced)
 
-- Read-only RPC only: `eth_call`, `eth_getCode`, `eth_getStorageAt`,
-  `eth_getBalance`, `eth_getLogs`. No `eth_sendTransaction` /
+- Read-only RPC only: `eth_call`, `eth_call` with explicit `from`,
+  `eth_getCode`, `eth_getStorageAt`, `eth_getBalance`, `eth_getLogs`.
+  No `eth_sendTransaction` /
   `eth_sendRawTransaction` / signing anywhere in the code.
 - No private keys, no wallet connection.
 - Foundry runs **fork tests only**; the runner refuses any file containing
@@ -284,11 +370,13 @@ selector, or a passing fork/eth_call PoC) — otherwise it is auto-downgraded.
 
 ```bash
 pip install pytest
-pytest            # proxy slot math, minimal-proxy detection, scoring thresholds, detectors on fixtures
+pytest            # full backend test suite
+cd frontend && npm run build
 ```
 
-Fixtures: `tests/fixtures/VulnerableUpgradeable.sol` (must produce findings) and
-`SafeVault.sol` (must NOT produce a fake critical).
+Current validation covers detector fixtures, proxy/source handling, scoring,
+AI/refuter precision guardrails, value-context behavior, fuzzing harness
+generation, bytecode intelligence, and scan manager behavior.
 
 ---
 
@@ -301,8 +389,28 @@ tests/     pytest suite + Solidity fixtures
 install_tools.sh   .env.example   requirements.txt   docker-compose.yml
 ```
 
-## Roadmap (v0.2)
+## Roadmap / next phase
 
-Foundry-generated fork PoCs run automatically for strong candidates; flesh out the
-stub detectors (delegatecall data-flow, bridge accounting, ZK verifier, privacy
-pool); multi-chain; Echidna property tests.
+The items below were **not useless**. They were ignored in the last zip import
+because the zip did not safely implement them yet. They are the next serious
+phase if the goal is an elite weird-bug hunter:
+
+1. `backend/core/semantic_index.py` - richer Solidity facts: params, modifiers,
+   guards, reads/writes, internal calls, external calls, decoded fields, events,
+   mappings, and value sinks.
+2. `backend/core/taint.py` - small inter-function dataflow: caller/calldata/proof
+   fields -> internal helpers -> value sinks / root / nullifier / replay markers.
+3. `backend/detectors/weird_hunt.py` - rare detectors for actual-received
+   accounting, weak Merkle binding, bitmap collisions, bridge replay keys, forced
+   ETH accounting, CREATE2/metamorphic trust, try/catch finalization, reward-debt
+   order, accumulator zero supply, position split/merge, governance snapshot
+   bypass, pause bypass, multicall msg.value reuse, unit mismatches, and duplicate
+   batch items.
+4. Better `privacy_pool`, `delegatecall`, `zk_verifier`, and access-control
+   custom-guard precision.
+5. More Semgrep corroboration rules and Foundry templates for each weird-bug
+   family.
+6. Protocol graph and storage-layout hints for cross-contract bugs.
+
+Recommended next build target: **Elite Phase 8 - semantic index + taint core**,
+then **Elite Phase 9 - weird-hunt detector pack**.
