@@ -341,6 +341,9 @@ export const api = {
   cancelScan: (id: string) =>
     request<Scan>(`/api/scans/${id}/cancel`, { method: 'POST' }),
 
+  rescanScan: (id: string) =>
+    request<Scan>(`/api/scans/${id}/rescan`, { method: 'POST' }),
+
   getScanFindings: (id: string) =>
     request<Finding[]>(`/api/scans/${id}/findings`),
 

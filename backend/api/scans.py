@@ -60,6 +60,35 @@ def _normalize_targets(req: CreateScanRequest) -> list[tuple[str, str]]:
     return list(seen.items())
 
 
+def _create_scan_record(
+    db: Session,
+    *,
+    name: str,
+    chain: str,
+    scan_profile: str,
+    toggles: dict,
+    targets: list[tuple[str, str]],
+) -> Scan:
+    """Create a queued scan plus target rows without starting the worker."""
+    scan = Scan(
+        name=name,
+        chain=chain,
+        scan_profile=scan_profile,
+        toggles=toggles,
+        total_targets=len(targets),
+        status=ScanStatus.QUEUED,
+    )
+    db.add(scan)
+    db.commit()
+    db.refresh(scan)
+
+    for addr, label in targets:
+        db.add(Target(scan_id=scan.id, address=addr, chain=chain, label=label))
+    db.commit()
+    db.refresh(scan)
+    return scan
+
+
 # Human labels for the scan profiles; anything not listed falls back to a
 # title-cased version of the registry key, so the UI auto-shows new profiles.
 _PROFILE_LABELS = {
@@ -116,26 +145,51 @@ def create_scan(req: CreateScanRequest, db: Session = Depends(get_db)) -> ScanOu
     if not targets:
         raise HTTPException(status_code=400, detail="no valid 0x addresses provided")
 
-    scan = Scan(
+    scan = _create_scan_record(
+        db,
         name=req.name or f"scan {len(targets)} targets",
         chain=req.chain,
         scan_profile=req.scan_profile,
         toggles=req.toggles.model_dump(exclude_none=True),
-        total_targets=len(targets),
-        status=ScanStatus.QUEUED,
+        targets=targets,
     )
-    db.add(scan)
-    db.commit()
-    db.refresh(scan)
-
-    for addr, label in targets:
-        db.add(Target(scan_id=scan.id, address=addr, chain=req.chain, label=label))
-    db.commit()
 
     # Kick off the async pipeline on the running event loop.
     manager.start_scan(scan.id)
     db.refresh(scan)
     return ScanOut.model_validate(scan)
+
+
+@router.post("/scans/{scan_id}/rescan", response_model=ScanOut, status_code=201)
+def rescan_scan(scan_id: int, db: Session = Depends(get_db)) -> ScanOut:
+    scan = db.get(Scan, scan_id)
+    if not scan:
+        raise HTTPException(status_code=404, detail="scan not found")
+    if scan.status not in (ScanStatus.FAILED, ScanStatus.CANCELLED):
+        raise HTTPException(
+            status_code=400,
+            detail="only failed or cancelled scans can be rescanned",
+        )
+
+    old_targets = db.scalars(
+        select(Target).where(Target.scan_id == scan_id).order_by(Target.id)
+    ).all()
+    targets = [(t.address, t.label or "") for t in old_targets]
+    if not targets:
+        raise HTTPException(status_code=400, detail="scan has no targets to rescan")
+
+    new_scan = _create_scan_record(
+        db,
+        name=f"Rescan of #{scan.id}: {scan.name}",
+        chain=scan.chain,
+        scan_profile=scan.scan_profile,
+        toggles=dict(scan.toggles or {}),
+        targets=targets,
+    )
+
+    manager.start_scan(new_scan.id)
+    db.refresh(new_scan)
+    return ScanOut.model_validate(new_scan)
 
 
 @router.get("/scans/{scan_id}", response_model=ScanDetailOut)

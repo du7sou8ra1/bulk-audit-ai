@@ -64,6 +64,7 @@ export default function ScansHistory() {
   const [profileFilter, setProfileFilter] = useState('all')
   const [sortKey, setSortKey] = useState<SortKey>('created_at')
   const [sortDir, setSortDir] = useState<SortDir>('desc')
+  const [rescanningId, setRescanningId] = useState<string | null>(null)
   const navigate = useNavigate()
 
   useEffect(() => {
@@ -173,6 +174,22 @@ export default function ScansHistory() {
     setProfileFilter('all')
     setSortKey('created_at')
     setSortDir('desc')
+  }
+
+  function canRescan(scan: Scan) {
+    return scan.status === 'failed' || scan.status === 'cancelled'
+  }
+
+  async function rescan(scan: Scan) {
+    setRescanningId(scan.id)
+    try {
+      const next = await api.rescanScan(scan.id)
+      navigate(`/scans/${next.id}`)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setRescanningId(null)
+    }
   }
 
   const activeCount = scans.filter(
@@ -289,7 +306,7 @@ export default function ScansHistory() {
           </div>
 
           <div className="card overflow-x-auto">
-            <table className="w-full min-w-[980px]">
+            <table className="w-full min-w-[1080px]">
               <thead className="border-b border-slate-800 bg-slate-900/80">
                 <tr>
                   <th className="th">
@@ -356,6 +373,7 @@ export default function ScansHistory() {
                       onClick={() => setSort('created_at')}
                     />
                   </th>
+                  <th className="th">Action</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800">
@@ -392,11 +410,28 @@ export default function ScansHistory() {
                     <td className="td text-slate-400">
                       {fmtDate(scan.created_at)}
                     </td>
+                    <td className="td">
+                      {canRescan(scan) ? (
+                        <button
+                          type="button"
+                          className="btn-secondary py-1.5 text-xs"
+                          disabled={rescanningId === scan.id}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            void rescan(scan)
+                          }}
+                        >
+                          {rescanningId === scan.id ? 'Starting...' : 'Rescan'}
+                        </button>
+                      ) : (
+                        <span className="text-xs text-slate-600">—</span>
+                      )}
+                    </td>
                   </tr>
                 ))}
                 {filteredScans.length === 0 && (
                   <tr>
-                    <td className="td text-slate-500" colSpan={8}>
+                    <td className="td text-slate-500" colSpan={9}>
                       No scans match the current filters.
                     </td>
                   </tr>

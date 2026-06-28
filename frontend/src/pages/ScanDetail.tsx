@@ -204,6 +204,7 @@ export default function ScanDetail() {
   const [loading, setLoading] = useState(true)
   const [usingWs, setUsingWs] = useState(false)
   const [cancelling, setCancelling] = useState(false)
+  const [rescanning, setRescanning] = useState(false)
   const [targetQuery, setTargetQuery] = useState('')
   const [targetSort, setTargetSort] = useState<TargetSortKey>('findings')
   const [targetSortDir, setTargetSortDir] = useState<SortDir>('desc')
@@ -333,6 +334,18 @@ export default function ScanDetail() {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
       setCancelling(false)
+    }
+  }
+
+  async function rescan() {
+    setRescanning(true)
+    try {
+      const next = await api.rescanScan(id)
+      navigate(`/scans/${next.id}`)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setRescanning(false)
     }
   }
 
@@ -589,6 +602,7 @@ export default function ScanDetail() {
       ? Math.round((scan.completed_targets / scan.total_targets) * 100)
       : 0
   const isRunning = scan.status === 'running' || scan.status === 'queued'
+  const canRescan = scan.status === 'failed' || scan.status === 'cancelled'
 
   function setTargetSortColumn(key: TargetSortKey) {
     if (targetSort === key) {
@@ -650,6 +664,15 @@ export default function ScanDetail() {
         }
         actions={
           <div className="flex items-center gap-2">
+            {canRescan && (
+              <button
+                className="btn-primary"
+                onClick={rescan}
+                disabled={rescanning}
+              >
+                {rescanning ? 'Starting...' : 'Rescan'}
+              </button>
+            )}
             {exportBtn('json', 'JSON')}
             {exportBtn('csv', 'CSV')}
             {exportBtn('md', 'Markdown')}

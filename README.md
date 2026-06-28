@@ -28,6 +28,7 @@ AI review layer.
    classification: `CONFIRMED_CRITICAL`, `LIKELY_CRITICAL_NEEDS_POC`,
    `NEEDS_MORE_INVESTIGATION`, `LOW_OR_INFO`, `FALSE_POSITIVE`.
 5. Export JSON / CSV / Markdown report draft / zipped evidence.
+6. Rescan failed or cancelled jobs from the scan detail page or the all-scans table; the retry keeps the same targets, chain, profile, and toggles in a fresh scan record.
 
 ---
 
