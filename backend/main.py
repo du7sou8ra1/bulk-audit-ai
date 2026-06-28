@@ -17,9 +17,24 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .config import ROOT_DIR, get_settings
 from .database import SessionLocal, init_db
+
+
+class SPAStaticFiles(StaticFiles):
+    async def get_response(self, path: str, scope):
+        try:
+            return await super().get_response(path, scope)
+        except StarletteHTTPException as exc:
+            if (
+                exc.status_code == 404
+                and scope["method"] in {"GET", "HEAD"}
+                and not path.startswith(("api/", "ws/"))
+            ):
+                return await super().get_response("index.html", scope)
+            raise
 
 
 @asynccontextmanager
@@ -75,7 +90,7 @@ def create_app() -> FastAPI:
     # Serve the built frontend if present (single-port VPS deploy).
     dist = ROOT_DIR / "frontend" / "dist"
     if dist.exists():
-        app.mount("/", StaticFiles(directory=str(dist), html=True), name="frontend")
+        app.mount("/", SPAStaticFiles(directory=str(dist), html=True), name="frontend")
 
     return app
 
