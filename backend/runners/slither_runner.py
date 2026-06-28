@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import tempfile
 from pathlib import Path
 
 from ..core.command_runner import run_command, which
@@ -79,6 +80,7 @@ def run_slither(
 
     out_dir.mkdir(parents=True, exist_ok=True)
     source_dir = source_dir.resolve()
+    out_dir = out_dir.resolve()
     if main_source is not None:
         main_source = main_source.resolve()
 
@@ -204,7 +206,7 @@ def _run_one(
         cmd = run_command(
             args,
             timeout=timeout,
-            cwd=out_dir,
+            cwd=_neutral_cwd(),
             output_dir=out_dir,
             output_prefix=f"slither_{index}_{attempt_no}",
         )
@@ -238,6 +240,19 @@ def _read_meta(source_dir: Path, main_source: Path | None) -> dict:
         except (json.JSONDecodeError, OSError):
             continue
     return {}
+
+
+def _neutral_cwd() -> Path:
+    """Run Slither outside the repo/output tree so Foundry config is not probed.
+
+    Crytic-compile may inspect the current directory for Foundry defaults even
+    when we pass ``--compile-force-framework solc``. Running from a neutral temp
+    directory keeps explicit ``--solc``, remappings, optimizer and EVM settings
+    authoritative.
+    """
+    path = Path(tempfile.gettempdir()) / "bulkauditai-slither-cwd"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def _candidate_targets(source_dir: Path, main_source: Path | None) -> list[Path]:
