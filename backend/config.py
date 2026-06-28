@@ -39,6 +39,11 @@ class Settings(BaseSettings):
         default="https://api.deepseek.com", alias="DEEPSEEK_BASE_URL"
     )
     deepseek_model: str = Field(default="deepseek-chat", alias="DEEPSEEK_MODEL")
+    ai_review_mode: str = Field(default="ultra", alias="AI_REVIEW_MODE")
+    ai_timeout_seconds: int = Field(default=300, alias="AI_TIMEOUT_SECONDS")
+    ai_min_interval_seconds: float = Field(default=1.0, alias="AI_MIN_INTERVAL_SECONDS")
+    ai_max_retries: int = Field(default=3, alias="AI_MAX_RETRIES")
+    ai_retry_backoff_seconds: float = Field(default=3.0, alias="AI_RETRY_BACKOFF_SECONDS")
 
     # --- Feature toggles ----------------------------------------------------
     enable_slither: bool = Field(default=True, alias="ENABLE_SLITHER")
@@ -147,6 +152,13 @@ def masked_settings() -> dict:
         "deepseek_configured": bool(s.deepseek_api_key),
         "deepseek_base_url": s.deepseek_base_url,
         "deepseek_model": s.deepseek_model,
+        "ai_review": {
+            "mode": s.ai_review_mode,
+            "timeout_seconds": s.ai_timeout_seconds,
+            "min_interval_seconds": s.ai_min_interval_seconds,
+            "max_retries": s.ai_max_retries,
+            "retry_backoff_seconds": s.ai_retry_backoff_seconds,
+        },
         "toggles": {
             "slither": s.enable_slither,
             "mythril": s.enable_mythril,

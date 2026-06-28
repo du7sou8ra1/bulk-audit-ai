@@ -34,9 +34,12 @@ Look hard for any reason it is NOT exploitable by an unprivileged actor:
 - a nullifier/replay-marker set before the external call,
 - economic infeasibility (needs a hash preimage, needs to BE a trusted role).
 
-Default to is_real=false unless the exploit genuinely survives your scrutiny.
-A finding that only relies on trusted owner/operator power is NOT a real
-unprivileged bug -> is_real=false, in_scope=false.
+For ordinary heuristic findings, default to is_real=false unless the exploit
+genuinely survives your scrutiny. For deterministic, lead_only, confirmable, or
+corroborated findings, uncertainty is NOT a refutation: only set
+concrete_mitigation=true when the provided code slice contains the exact control
+that neutralizes the claim. A finding that only relies on trusted owner/operator
+power is NOT a real unprivileged bug -> is_real=false, in_scope=false.
 
 Return ONLY JSON:
 {"is_real": true|false,
@@ -64,7 +67,8 @@ economically exploitable", "it is probably not reachable", "needs a PoC", "the
 protocol likely intends this", "the binding may live off-chain / in the circuit".
 Those are expected unknowns. If no concrete on-chain control is present in the
 slice, the finding SURVIVES.
-Set "concrete_mitigation": true ONLY if you cited such a control; otherwise false."""
+Set "concrete_mitigation": true ONLY if you cited such a control by function or
+condition; otherwise false."""
 
 
 def refute(ctx: TargetContext, candidate: FindingCandidate, cg: CallGraph | None = None) -> dict:
@@ -76,7 +80,11 @@ def refute(ctx: TargetContext, candidate: FindingCandidate, cg: CallGraph | None
 
     ev0 = candidate.evidence or {}
     tier = ev0.get("onchain_detectable")
-    protected = bool(ev0.get("lead_only") or tier in ("lead_only", "confirmable"))
+    protected = bool(
+        ev0.get("lead_only")
+        or tier in ("lead_only", "confirmable")
+        or ev0.get("corroborated")
+    )
     system = _SYSTEM + (_PROTECTED_ADDENDUM if protected else "")
 
     cg = cg or CallGraph.build(ctx.source_files)

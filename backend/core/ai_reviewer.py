@@ -14,10 +14,9 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import httpx
-
 from ..config import ROOT_DIR, get_settings
 from ..models import Classification
+from .llm import chat_json
 
 logger = logging.getLogger("bulkauditai.ai")
 
@@ -32,6 +31,22 @@ Historical audit-corpus matches are precedent/context only, never proof of targe
 exploitability.
 Return ONLY JSON with keys: classification, severity, confidence, rationale, why_not_higher,
 next_tests, reportability."""
+
+_ULTRA_REVIEW_ADDENDUM = """
+
+ULTRA REVIEW MODE:
+Before returning the final JSON, privately run a deeper audit checklist:
+1. Trace the claimed exploit path from entrypoint to value/state impact.
+2. Identify every caller/role/proxy/admin assumption needed by the attack.
+3. Look for concrete on-chain defusing controls: modifiers, require checks,
+   equality/range checks, hash/commitment binding, allowlists, nullifiers, or
+   replay markers.
+4. Compare against tool corroboration and detector evidence. If a high-impact
+   deterministic/corroborated finding is not concretely defused, uncertainty
+   must become NEEDS_MORE_INVESTIGATION, not FALSE_POSITIVE.
+5. Suggest the smallest fork/read-only test that would settle the question.
+
+Do not reveal hidden reasoning steps. Return only the required concise JSON."""
 
 
 @dataclass
@@ -58,6 +73,13 @@ def _load_system_prompt() -> str:
         except OSError:
             pass
     return _FALLBACK_SYSTEM_PROMPT
+
+
+def _system_prompt_for_mode(mode: str) -> str:
+    prompt = _load_system_prompt()
+    if (mode or "").strip().lower() in {"deep", "ultra", "ultrathinking", "ultra-thinking"}:
+        prompt += _ULTRA_REVIEW_ADDENDUM
+    return prompt
 
 
 def _extract_json(content: str) -> dict | None:
@@ -100,9 +122,77 @@ def evidence_has_unauthorized_path(packet: dict) -> bool:
     return False
 
 
+def _has_concrete_defusing_control(ev: dict) -> bool:
+    refutation = ev.get("refutation") or {}
+    if ev.get("suppressed"):
+        return True
+    return bool(
+        ev.get("refuted_concrete")
+        or refutation.get("concrete_mitigation")
+        or refutation.get("concrete_defusing_control")
+    )
+
+
+def _is_high_signal_packet(packet: dict) -> bool:
+    ev = packet.get("evidence", {}) or {}
+    cand = packet.get("candidate", {}) or {}
+    tier = ev.get("onchain_detectable")
+    protected = bool(ev.get("lead_only") or tier in ("lead_only", "confirmable"))
+    if protected or ev.get("corroborated"):
+        return True
+    try:
+        impact = float(cand.get("pre_ai_impact") or 0)
+        confidence = float(cand.get("pre_ai_confidence") or 0)
+    except (TypeError, ValueError):
+        impact = confidence = 0.0
+    pre_cls = str(cand.get("pre_ai_classification") or "")
+    return bool(
+        impact >= 8
+        and confidence >= 4
+        and pre_cls
+        in {
+            Classification.NEEDS_MORE_INVESTIGATION,
+            Classification.LIKELY_CRITICAL_NEEDS_POC,
+            Classification.CONFIRMED_CRITICAL,
+        }
+    )
+
+
+def _apply_post_triage_guardrails(packet: dict, result: AIResult) -> None:
+    """Conservative AI floor: do not let AI bury strong unresolved leads."""
+    ev = packet.get("evidence", {}) or {}
+
+    # No CONFIRMED_CRITICAL without demonstrated unauthorized path.
+    if result.classification == Classification.CONFIRMED_CRITICAL and not evidence_has_unauthorized_path(
+        packet
+    ):
+        result.classification = Classification.LIKELY_CRITICAL_NEEDS_POC
+        result.enforced_downgrade = True
+        result.why_not_higher = (
+            "[enforced] No reproducible unauthorized path (open role / unguarded selector / "
+            "PoC) in evidence; downgraded from CONFIRMED_CRITICAL. " + result.why_not_higher
+        )
+
+    # A high-signal deterministic/corroborated finding is not allowed to become
+    # FALSE_POSITIVE/LOW_OR_INFO unless evidence cites a concrete defusing control.
+    if (
+        _is_high_signal_packet(packet)
+        and not _has_concrete_defusing_control(ev)
+        and result.classification in (Classification.FALSE_POSITIVE, Classification.LOW_OR_INFO)
+    ):
+        result.classification = Classification.NEEDS_MORE_INVESTIGATION
+        result.enforced_downgrade = True
+        result.reportability = "needs_more_testing"
+        result.why_not_higher = (
+            "[enforced] high-signal detector/corroborated finding was not concretely "
+            "defused by an on-chain control; floored to NEEDS_MORE_INVESTIGATION. "
+            + result.why_not_higher
+        )
+
+
 def review_finding(packet: dict, *, prompt_save_path: Path | None = None) -> AIResult:
     s = get_settings()
-    system_prompt = _load_system_prompt()
+    system_prompt = _system_prompt_for_mode(s.ai_review_mode)
     user_content = json.dumps(packet, indent=2, default=str)
     result = AIResult(model=s.deepseek_model, prompt_text=system_prompt)
 
@@ -113,17 +203,11 @@ def review_finding(packet: dict, *, prompt_save_path: Path | None = None) -> AIR
         result.error = "DEEPSEEK_API_KEY not configured"
         return result
 
-    request_body = {
+    result.request_json = {
+        "messages_preview": packet,
         "model": s.deepseek_model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_content},
-        ],
-        "temperature": 0.0,
-        "stream": False,
-        "response_format": {"type": "json_object"},
+        "ai_review_mode": s.ai_review_mode,
     }
-    result.request_json = {"messages_preview": packet, "model": s.deepseek_model}
 
     if prompt_save_path is not None:
         try:
@@ -133,50 +217,19 @@ def review_finding(packet: dict, *, prompt_save_path: Path | None = None) -> AIR
         except OSError:
             pass
 
-    url = f"{s.deepseek_base_url.rstrip('/')}/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {s.deepseek_api_key}",
-        # Optional OpenRouter attribution headers (harmless on api.deepseek.com).
-        "HTTP-Referer": "https://github.com/bulk-audit-ai",
-        "X-Title": "BulkAuditAI",
-    }
-
-    def _post(body: dict):
-        with httpx.Client(timeout=120) as client:
-            resp = client.post(url, headers=headers, json=body)
-            resp.raise_for_status()
-            return resp.json()
-
-    try:
-        data = _post(request_body)
-    except httpx.HTTPStatusError as exc:
-        # Some OpenRouter providers reject `response_format` (4xx). Retry once
-        # without it — we still parse JSON out of the content defensively.
-        if 400 <= exc.response.status_code < 500 and "response_format" in request_body:
-            body2 = {k: v for k, v in request_body.items() if k != "response_format"}
-            try:
-                data = _post(body2)
-            except Exception as exc2:
-                result.error = f"DeepSeek request failed (no json-mode retry): {type(exc2).__name__}: {exc2}"
-                return result
-        else:
-            result.error = f"DeepSeek request failed: HTTP {exc.response.status_code}: {exc.response.text[:300]}"
-            return result
-    except Exception as exc:
-        result.error = f"DeepSeek request failed: {type(exc).__name__}: {exc}"
+    chat = chat_json(system_prompt, user_content, timeout=s.ai_timeout_seconds)
+    result.request_json.update(chat.request_json or {})
+    result.response_json = chat.response_json
+    result.model = chat.model or result.model
+    if chat.error:
+        result.error = chat.error
+        result.rationale = chat.raw_content[:2000]
         return result
 
-    result.response_json = data
-    try:
-        content = data["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError):
-        result.error = "unexpected DeepSeek response shape"
-        return result
-
-    parsed = _extract_json(content)
+    parsed = chat.parsed or _extract_json(chat.raw_content)
     if parsed is None:
         result.error = "could not parse JSON verdict from model output"
-        result.rationale = content[:2000]
+        result.rationale = chat.raw_content[:2000]
         return result
 
     cls = _normalize_classification(parsed.get("classification"))
@@ -192,37 +245,6 @@ def review_finding(packet: dict, *, prompt_save_path: Path | None = None) -> AIR
     result.next_tests = nt if isinstance(nt, list) else [str(nt)]
     result.reportability = str(parsed.get("reportability", "needs_more_testing"))
 
-    # --- Hard guardrail: no CONFIRMED_CRITICAL without a demonstrated path --- #
-    if result.classification == Classification.CONFIRMED_CRITICAL and not evidence_has_unauthorized_path(
-        packet
-    ):
-        result.classification = Classification.LIKELY_CRITICAL_NEEDS_POC
-        result.enforced_downgrade = True
-        result.why_not_higher = (
-            "[enforced] No reproducible unauthorized path (open role / unguarded selector / "
-            "PoC) in evidence; downgraded from CONFIRMED_CRITICAL. " + result.why_not_higher
-        )
-
-    # --- Lead guardrail: a lead_only finding states up-front that it cannot be
-    # confirmed from Solidity (binding may live in the circuit / needs a PoC). It
-    # must NOT be dismissed as FALSE_POSITIVE for lack of confirmation — that is its
-    # expected state. Unless a concrete on-chain control defused it (refuted), floor
-    # it to NEEDS_MORE_INVESTIGATION so a human/ZK auditor sees it. (This is what
-    # buried the real Aztec settlement-boundary finding.) --------------------- #
-    ev = packet.get("evidence", {}) or {}
-    tier = ev.get("onchain_detectable")
-    protected = bool(ev.get("lead_only") or tier in ("lead_only", "confirmable"))
-    if (
-        protected
-        and not ev.get("refuted")
-        and result.classification == Classification.FALSE_POSITIVE
-    ):
-        result.classification = Classification.NEEDS_MORE_INVESTIGATION
-        result.enforced_downgrade = True
-        result.why_not_higher = (
-            "[enforced] a deterministic-detector finding (lead_only/confirmable) "
-            "cannot be FALSE_POSITIVE without a cited on-chain control that defuses "
-            "it; floored to NEEDS_MORE_INVESTIGATION. " + result.why_not_higher
-        )
+    _apply_post_triage_guardrails(packet, result)
 
     return result

@@ -15,6 +15,8 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
+import time
 from dataclasses import dataclass, field
 
 import httpx
@@ -29,8 +31,16 @@ class ChatResult:
     parsed: dict | None = None          # parsed JSON object (None on failure)
     raw_content: str = ""               # raw assistant text
     response_json: dict = field(default_factory=dict)
+    request_json: dict = field(default_factory=dict)
     model: str = ""
+    attempts: int = 0
+    rate_limited_seconds: float = 0.0
     error: str | None = None
+
+
+_RATE_LOCK = threading.Lock()
+_LAST_REQUEST_AT = 0.0
+_RETRYABLE_STATUS = {408, 429, 500, 502, 503, 504}
 
 
 def _extract_json(content: str) -> dict | None:
@@ -83,6 +93,18 @@ def chat_json(
     }
     if max_tokens:
         body["max_tokens"] = max_tokens
+    timeout = max(int(timeout or 0), int(s.ai_timeout_seconds or 0), 30)
+    max_retries = max(0, int(s.ai_max_retries or 0))
+    retry_backoff = max(0.1, float(s.ai_retry_backoff_seconds or 0.1))
+    min_interval = max(0.0, float(s.ai_min_interval_seconds or 0.0))
+    res.request_json = {
+        "model": s.deepseek_model,
+        "timeout": timeout,
+        "max_retries": max_retries,
+        "min_interval_seconds": min_interval,
+        "review_mode": s.ai_review_mode,
+        "messages_preview": user_payload if isinstance(user_payload, dict) else user_content[:4000],
+    }
 
     url = f"{s.deepseek_base_url.rstrip('/')}/chat/completions"
     headers = {
@@ -91,20 +113,60 @@ def chat_json(
         "X-Title": "BulkAuditAI",
     }
 
-    def _post(payload: dict) -> dict:
+    def _pace() -> None:
+        nonlocal res
+        if min_interval <= 0:
+            return
+        global _LAST_REQUEST_AT
+        with _RATE_LOCK:
+            now = time.monotonic()
+            wait = max(0.0, (_LAST_REQUEST_AT + min_interval) - now)
+            if wait:
+                time.sleep(wait)
+                res.rate_limited_seconds += wait
+            _LAST_REQUEST_AT = time.monotonic()
+
+    def _post_once(payload: dict) -> dict:
+        _pace()
         with httpx.Client(timeout=timeout) as client:
             resp = client.post(url, headers=headers, json=payload)
             resp.raise_for_status()
             return resp.json()
 
+    def _post_with_retries(payload: dict) -> dict:
+        last_error: Exception | None = None
+        for attempt in range(max_retries + 1):
+            res.attempts += 1
+            try:
+                return _post_once(payload)
+            except httpx.HTTPStatusError as exc:
+                last_error = exc
+                status = exc.response.status_code
+                if status in _RETRYABLE_STATUS and attempt < max_retries:
+                    time.sleep(retry_backoff * (2 ** attempt))
+                    continue
+                raise
+            except (httpx.TimeoutException, httpx.TransportError) as exc:
+                last_error = exc
+                if attempt < max_retries:
+                    time.sleep(retry_backoff * (2 ** attempt))
+                    continue
+                raise
+        raise last_error or RuntimeError("LLM request failed")
+
     try:
-        data = _post(body)
+        data = _post_with_retries(body)
     except httpx.HTTPStatusError as exc:
-        # Some providers reject response_format -> retry once without it.
-        if 400 <= exc.response.status_code < 500 and "response_format" in body:
+        # Some providers reject response_format -> retry without it. Do not use
+        # this path for rate limits; those already used the retry/backoff loop.
+        if (
+            400 <= exc.response.status_code < 500
+            and exc.response.status_code not in _RETRYABLE_STATUS
+            and "response_format" in body
+        ):
             body2 = {k: v for k, v in body.items() if k != "response_format"}
             try:
-                data = _post(body2)
+                data = _post_with_retries(body2)
             except Exception as exc2:  # noqa: BLE001
                 res.error = f"LLM request failed: {type(exc2).__name__}: {exc2}"
                 return res
