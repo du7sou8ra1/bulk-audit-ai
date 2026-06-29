@@ -211,3 +211,31 @@ rules:
       include: ["*.sol"]
     patterns:
       - pattern-regex: '(?s)function\s+\w*(claim|reward|harvest|settle|stake|bet)\w*\s*\([^)]*\)[^{;]*\{[\s\S]{0,1400}balanceOf\s*\(\s*(msg\.sender|account|user|player)[\s\S]{0,1400}(reward|points|payout|transfer|_mint)'
+
+
+  - id: solidity-rfq-signer-inventory-mismatch
+    languages: [generic]
+    severity: ERROR
+    message: "RFQ/signature flow transfers from inventory/maker/from; verify signer is authorized by that exact spender."
+    paths:
+      include: ["*.sol"]
+    patterns:
+      - pattern-regex: '(?s)(ecrecover|ECDSA|isValidSignature|signer)[\s\S]{0,1800}(allowed|approved|valid|receiver|taker)[\s\S]{0,1800}(transferFrom|safeTransferFrom)\s*\(\s*(order\.)?(inventory|maker|from|src|source|owner)\b'
+
+  - id: solidity-permissionless-batch-executor
+    languages: [generic]
+    severity: ERROR
+    message: "Externally callable batch/run executor performs low-level calls; verify auth/signature/nonce/allowlist."
+    paths:
+      include: ["*.sol"]
+    patterns:
+      - pattern-regex: '(?s)function\s+(run|batch|batchCall|executeBatch|multicall|aggregate)\w*\s*\([^)]*(address|bytes|Call|Transaction)[^)]*\[\][^)]*\)\s*(external|public)[^{;]*\{[\s\S]{0,1800}for\s*\([\s\S]{0,1800}\.\s*(call|delegatecall)\s*[\({]'
+
+  - id: solidity-spot-priced-leverage-liquidation-cap
+    languages: [generic]
+    severity: WARNING
+    message: "Leverage/open-position path uses spot price and contract has liquidation cap; check BoostHook-style bad debt."
+    paths:
+      include: ["*.sol"]
+    patterns:
+      - pattern-regex: '(?s)(MAX_?LIQ|liquidations?ThisBlock|liquidations?InBlock|maxLiquidations)[\s\S]{0,5000}function\s+\w*(openLong|leverage|boost|borrow|openPosition)\w*\s*\([^)]*\)[\s\S]{0,1600}(slot0\s*\(|sqrtPriceX96|getCurrentPrice|spotPrice)[\s\S]{0,1600}(debt|borrow|loan|position|margin)'

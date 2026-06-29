@@ -1761,3 +1761,188 @@ class BalanceSnapshotRewardInflationDetector(Detector):
                     extra={"file": path, "lead_only": True},
                 ))
         return out
+
+
+
+# --------------------------------------------------------------------------- #
+# TrustedVolumes class: RFQ signer/receiver auth used to spend inventory/maker
+# --------------------------------------------------------------------------- #
+_RFQ_FN = re.compile(r"(fill|order|rfq|quote|swap|settle|trade)", re.I)
+_RFQ_SIG_AUTH = re.compile(r"ecrecover|ECDSA|recover\s*\(|isValidSignature|signature|signer", re.I)
+_RFQ_RECEIVER_AUTH = re.compile(
+    r"(allowed|approved|valid|is)\w*(Signer|signer)\s*\[[^\]]*(receiver|recipient|taker)[^\]]*\]\s*\[[^\]]*signer|"
+    r"(receiver|recipient|taker)[\s\S]{0,180}signer|signer[\s\S]{0,180}(receiver|recipient|taker)",
+    re.I,
+)
+_RFQ_SPENDER_TRANSFER = re.compile(
+    r"(?:safeTransferFrom|transferFrom)\s*\(\s*(?P<from>(?:order\s*\.\s*)?(?:inventory|maker|from|src|source|owner))\b",
+    re.I,
+)
+_RFQ_SIGNER_BOUND_TO_FROM = re.compile(
+    r"(?:require|if)\s*\([^)]*(inventory|maker|from|src|source|owner)[^)]*(==|!=)[^)]*signer|"
+    r"(?:require|if)\s*\([^)]*signer[^)]*(==|!=)[^)]*(inventory|maker|from|src|source|owner)|"
+    r"(allowed|approved|valid|is)\w*(Signer|signer)\s*\[[^\]]*(inventory|maker|from|src|source|owner)[^\]]*\]\s*\[[^\]]*signer",
+    re.I,
+)
+
+
+class RfqSignerInventoryMismatchDetector(Detector):
+    name = "rfq_signer_inventory_mismatch"
+
+    def run(self, ctx: TargetContext) -> list[FindingCandidate]:
+        out: list[FindingCandidate] = []
+        for path, src in ctx.source_files.items():
+            if not src:
+                continue
+            for fname, params, tail, body in iter_function_bodies(src):
+                if re.search(r"\b(view|pure)\b", tail, re.I):
+                    continue
+                surface = f"{fname} {params} {body}"
+                if not (_RFQ_FN.search(fname) or re.search(r"\bOrder\b|RFQ|quote", params + body, re.I)):
+                    continue
+                if not (_RFQ_SIG_AUTH.search(body) and _RFQ_RECEIVER_AUTH.search(body)):
+                    continue
+                transfer = _RFQ_SPENDER_TRANSFER.search(body)
+                if not transfer or _RFQ_SIGNER_BOUND_TO_FROM.search(body):
+                    continue
+                out.append(_finding(
+                    self.name,
+                    "rfq_signer_not_bound_to_inventory",
+                    f"RFQ signature authorizes receiver/signer but transferFrom spends a separate inventory/maker: {fname}",
+                    (
+                        f"`{fname}` verifies a signature/signer relationship around the receiver/taker, "
+                        "then calls transferFrom using an inventory/maker/from address that is not visibly "
+                        "bound to the recovered signer. A signer authorized for one receiver can settle "
+                        "against a third-party inventory address that merely approved the proxy "
+                        "(TrustedVolumes RFQ signer/maker mismatch class)."
+                    ),
+                    9.4,
+                    7.6,
+                    "critical",
+                    "rfq_signer_inventory_mismatch",
+                    fname,
+                    lead_only=False,
+                    tests=[
+                        "Fork/unit: sign an order from an attacker-controlled receiver/signer and set inventory/from to a victim address with token approval.",
+                        "Confirm fill reverts unless signer == inventory/maker/from or signer is explicitly authorized by that inventory address.",
+                        "Check replay protection also binds order id/hash to maker/inventory, receiver, token, amount, chain id, and contract.",
+                    ],
+                    extra={"file": path, "transfer_from": transfer.group("from")},
+                ))
+        return out
+
+
+# --------------------------------------------------------------------------- #
+# QNT / SquidMulticall class: permissionless batch/run arbitrary executor
+# --------------------------------------------------------------------------- #
+_BATCH_RUN_FN = re.compile(r"^(run|batch|batchCall|executeBatch|multicall|aggregate|execute)$", re.I)
+_BATCH_ARRAY_PARAM = re.compile(r"(address|bytes|Call|Transaction|Target)\s*\[\s*\]", re.I)
+_BATCH_LOOP = re.compile(r"\bfor\s*\(|\bwhile\s*\(", re.I)
+_LOW_LEVEL_TARGET_CALL = re.compile(r"\.\s*(?:call|delegatecall)\s*[({]", re.I)
+_AUTH_GUARD = re.compile(
+    r"onlyOwner|onlyRole|onlyAdmin|requiresAuth|authorized|msg\.sender\s*==\s*(owner|admin|executor|entryPoint|trusted)|"
+    r"hasRole\s*\(|ecrecover|ECDSA|isValidSignature|nonce|permit|signature|allowlist|whitelist",
+    re.I,
+)
+
+
+class PermissionlessBatchExecutorDetector(Detector):
+    name = "permissionless_batch_executor"
+
+    def run(self, ctx: TargetContext) -> list[FindingCandidate]:
+        out: list[FindingCandidate] = []
+        for path, src in ctx.source_files.items():
+            if not src:
+                continue
+            for fname, params, tail, body in iter_function_bodies(src):
+                if re.search(r"\b(view|pure|internal|private)\b", tail, re.I):
+                    continue
+                if not (_BATCH_RUN_FN.search(fname) or re.search(r"(batch|multicall|aggregate|run)", fname, re.I)):
+                    continue
+                if not (_BATCH_ARRAY_PARAM.search(params) or re.search(r"targets?\s*\[|calls?\s*\[|data\s*\[", body, re.I)):
+                    continue
+                if not (_BATCH_LOOP.search(body) and _LOW_LEVEL_TARGET_CALL.search(body)):
+                    continue
+                if _AUTH_GUARD.search(tail + body):
+                    continue
+                out.append(_finding(
+                    self.name,
+                    "permissionless_batch_low_level_calls",
+                    f"Permissionless batch/run function executes low-level calls: {fname}",
+                    (
+                        f"`{fname}` is externally callable, iterates over caller-supplied call/target "
+                        "arrays, and performs low-level call/delegatecall without visible owner, "
+                        "signature, nonce, entrypoint, or allowlist gating. If any privileged EOA/"
+                        "BatchExecutor/7702 account authorizes this contract, attackers can drain "
+                        "approved tokens or execute arbitrary calls (QNT EIP-7702 / SquidMulticall class)."
+                    ),
+                    9.0,
+                    7.0,
+                    "critical",
+                    "permissionless_batch_executor",
+                    fname,
+                    lead_only=False,
+                    tests=[
+                        "Fork: from a random EOA, call the batch/run function with token.transferFrom(victim, attacker, amount).",
+                        "Check whether this contract is approved/authorized by any EIP-7702 delegated account, reserve pool, Safe module, or executor.",
+                        "Confirm batch calls require signer authorization bound to every target/value/data tuple and a nonce.",
+                    ],
+                    extra={"file": path},
+                ))
+        return out
+
+
+# --------------------------------------------------------------------------- #
+# BoostHook class: spot-priced leverage plus capped same-block liquidation
+# --------------------------------------------------------------------------- #
+_LEVERAGE_FN = re.compile(r"(openLong|openShort|leverage|boost|borrow|openPosition|increasePosition)", re.I)
+_SPOT_PRICE_READ = re.compile(r"slot0\s*\(|sqrtPriceX96|getCurrentPrice|currentPrice|getSqrtRatio|spotPrice", re.I)
+_DEBT_POSITION_WRITE = re.compile(r"debt|borrow|loan|leverage|collateral|position|margin", re.I)
+_LIQUIDATION_CAP = re.compile(
+    r"MAX_?LIQ|liquidations?ThisBlock|liquidations?InBlock|maxLiquidations|block\.number[\s\S]{0,120}liquidat",
+    re.I,
+)
+_TWAP_MITIGATION = re.compile(r"observe\s*\(|consult\s*\(|TWAP|timeWeighted|secondsAgo|OracleLibrary\.consult", re.I)
+
+
+class SpotPricedLeverageLiquidationCapDetector(Detector):
+    name = "spot_priced_leverage_liquidation_cap"
+
+    def run(self, ctx: TargetContext) -> list[FindingCandidate]:
+        out: list[FindingCandidate] = []
+        for path, src in ctx.source_files.items():
+            if not src or not _LIQUIDATION_CAP.search(src):
+                continue
+            for fname, _params, tail, body in iter_function_bodies(src):
+                if re.search(r"\b(view|pure)\b", tail, re.I):
+                    continue
+                if not _LEVERAGE_FN.search(fname):
+                    continue
+                if not (_SPOT_PRICE_READ.search(body) and _DEBT_POSITION_WRITE.search(body)):
+                    continue
+                if _TWAP_MITIGATION.search(body):
+                    continue
+                out.append(_finding(
+                    self.name,
+                    "spot_priced_leverage_with_liquidation_cap",
+                    f"Leverage/open-position path uses spot price while liquidation is capped: {fname}",
+                    (
+                        f"`{fname}` opens or increases leveraged/debt positions using an immediate "
+                        "spot price read, while the contract has a same-block/per-block liquidation "
+                        "cap. A flash-manipulated spot price can open many toxic positions faster "
+                        "than liquidation can clear them, leaving bad debt (BoostHook openLong class)."
+                    ),
+                    8.8,
+                    6.6,
+                    "critical",
+                    "spot_priced_leverage_liquidation_cap",
+                    fname,
+                    lead_only=True,
+                    tests=[
+                        "Fork: manipulate the pool spot price, open more positions than the liquidation cap, then attempt same-block liquidation.",
+                        "Confirm open-position pricing uses TWAP/oracle bounds, not raw slot0/current spot.",
+                        "Remove/raise the cap in a simulation and compare residual bad debt after liquidation.",
+                    ],
+                    extra={"file": path, "lead_only": True},
+                ))
+        return out

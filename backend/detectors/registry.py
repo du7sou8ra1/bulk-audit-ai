@@ -72,6 +72,9 @@ from .ultra_deep import (
 )
 from .ultra_deep_v2 import (
     AllowanceDrainRouterDetector,
+    SpotPricedLeverageLiquidationCapDetector,
+    RfqSignerInventoryMismatchDetector,
+    PermissionlessBatchExecutorDetector,
     WhitelistClaimReplayDetector,
     RedemptionAfterSupplyBurnDetector,
     BalanceSnapshotRewardInflationDetector,
@@ -210,6 +213,9 @@ ULTRA_DEEP_V2_EXTRA_DETECTORS: list[type[Detector]] = [
     RedemptionAfterSupplyBurnDetector,
     WhitelistClaimReplayDetector,
     BalanceSnapshotRewardInflationDetector,
+    PermissionlessBatchExecutorDetector,
+    RfqSignerInventoryMismatchDetector,
+    SpotPricedLeverageLiquidationCapDetector,
 ]
 
 WEIRD_HUNT_DETECTORS: list[type[Detector]] = [

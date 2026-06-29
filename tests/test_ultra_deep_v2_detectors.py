@@ -5,6 +5,9 @@ from backend.detectors.base import TargetContext
 from backend.detectors.registry import get_detectors
 from backend.detectors.ultra_deep_v2 import (
     AllowanceDrainRouterDetector,
+    SpotPricedLeverageLiquidationCapDetector,
+    RfqSignerInventoryMismatchDetector,
+    PermissionlessBatchExecutorDetector,
     WhitelistClaimReplayDetector,
     RedemptionAfterSupplyBurnDetector,
     BalanceSnapshotRewardInflationDetector,
@@ -899,4 +902,104 @@ def test_balance_snapshot_reward_inflation_detector():
     """
     d = BalanceSnapshotRewardInflationDetector()
     assert "live_balance_reward_without_checkpoint" in _rules(d, bad)
+    assert not _rules(d, good)
+
+
+
+def test_message18_gap_detectors_registered_in_v2():
+    names = {d.name for d in get_detectors("ultra-deep-v2")}
+    assert "rfq_signer_inventory_mismatch" in names
+    assert "permissionless_batch_executor" in names
+    assert "spot_priced_leverage_liquidation_cap" in names
+
+
+def test_rfq_signer_inventory_mismatch_detector():
+    bad = """
+    contract Resolver {
+      mapping(address => mapping(address => bool)) allowedOrderSigner;
+      struct Order { address receiver; address inventory; address token; uint256 amount; }
+      function fillOrder(Order calldata order, bytes calldata sig) external {
+        address signer = ECDSA.recover(hash(order), sig);
+        require(allowedOrderSigner[order.receiver][signer], "bad signer");
+        IERC20(order.token).transferFrom(order.inventory, msg.sender, order.amount);
+      }
+      function hash(Order calldata) internal pure returns (bytes32) {}
+    }
+    """
+    good = """
+    contract ResolverSafe {
+      mapping(address => mapping(address => bool)) allowedOrderSigner;
+      struct Order { address receiver; address inventory; address token; uint256 amount; }
+      function fillOrder(Order calldata order, bytes calldata sig) external {
+        address signer = ECDSA.recover(hash(order), sig);
+        require(allowedOrderSigner[order.inventory][signer], "bad signer");
+        IERC20(order.token).transferFrom(order.inventory, msg.sender, order.amount);
+      }
+      function hash(Order calldata) internal pure returns (bytes32) {}
+    }
+    """
+    d = RfqSignerInventoryMismatchDetector()
+    assert "rfq_signer_not_bound_to_inventory" in _rules(d, bad)
+    assert not _rules(d, good)
+
+
+def test_permissionless_batch_executor_detector():
+    bad = """
+    contract BatchCall {
+      struct Call { address target; bytes data; uint256 value; }
+      function batch(Call[] calldata calls) external payable {
+        for (uint256 i; i < calls.length; ++i) {
+          (bool ok,) = calls[i].target.call{value: calls[i].value}(calls[i].data);
+          require(ok);
+        }
+      }
+    }
+    """
+    good = """
+    contract BatchSafe {
+      address owner;
+      struct Call { address target; bytes data; uint256 value; }
+      function batch(Call[] calldata calls) external payable {
+        require(msg.sender == owner, "owner");
+        for (uint256 i; i < calls.length; ++i) {
+          (bool ok,) = calls[i].target.call{value: calls[i].value}(calls[i].data);
+          require(ok);
+        }
+      }
+    }
+    """
+    d = PermissionlessBatchExecutorDetector()
+    assert "permissionless_batch_low_level_calls" in _rules(d, bad)
+    assert not _rules(d, good)
+
+
+def test_spot_priced_leverage_liquidation_cap_detector():
+    bad = """
+    contract BoostHook {
+      uint256 constant MAX_LIQS_PER_BLOCK = 5;
+      mapping(uint256 => Position) positions;
+      function openLong(uint256 amount) external {
+        (, int24 tick,,,,,) = pool.slot0();
+        uint256 spotPrice = getCurrentPrice(tick);
+        positions[nextId] = Position({debt: amount * spotPrice, margin: amount});
+      }
+      function liquidate(uint256[] calldata ids) external {
+        require(ids.length <= MAX_LIQS_PER_BLOCK, "cap");
+      }
+    }
+    """
+    good = """
+    contract BoostSafe {
+      uint256 constant MAX_LIQS_PER_BLOCK = 5;
+      function openLong(uint256 amount) external {
+        uint256 price = OracleLibrary.consult(pool, 1800);
+        positions[nextId] = Position({debt: amount * price, margin: amount});
+      }
+      function liquidate(uint256[] calldata ids) external {
+        require(ids.length <= MAX_LIQS_PER_BLOCK, "cap");
+      }
+    }
+    """
+    d = SpotPricedLeverageLiquidationCapDetector()
+    assert "spot_priced_leverage_with_liquidation_cap" in _rules(d, bad)
     assert not _rules(d, good)
