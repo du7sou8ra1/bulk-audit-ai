@@ -72,6 +72,9 @@ from .ultra_deep import (
 )
 from .ultra_deep_v2 import (
     AllowanceDrainRouterDetector,
+    WhitelistClaimReplayDetector,
+    RedemptionAfterSupplyBurnDetector,
+    BalanceSnapshotRewardInflationDetector,
     AmmPairReserveDesyncDetector,
     BridgeRetryDomainBindingDetector,
     BridgeKeeperMutationDetector,
@@ -204,6 +207,9 @@ ULTRA_DEEP_V2_EXTRA_DETECTORS: list[type[Detector]] = [
     FlashCycleRoundingWithdrawDetector,
     MultisigDelegatecallPayloadDetector,
     CustodySweepCentralizationDetector,
+    RedemptionAfterSupplyBurnDetector,
+    WhitelistClaimReplayDetector,
+    BalanceSnapshotRewardInflationDetector,
 ]
 
 WEIRD_HUNT_DETECTORS: list[type[Detector]] = [

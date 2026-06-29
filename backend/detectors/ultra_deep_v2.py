@@ -1578,3 +1578,186 @@ class Erc4626DualAssetRedeemDoubleCountDetector(Detector):
                     extra={"file": path, "total_assets_function": "totalAssets"},
                 ))
         return out
+
+
+
+# --------------------------------------------------------------------------- #
+# Thetanuts class: redemption math computed after burning supply/shares
+# --------------------------------------------------------------------------- #
+_REDEEM_FN = re.compile(r"(redeem|withdraw|exit|unstake|burn)", re.I)
+_SUPPLY_BURN = re.compile(
+    r"_burn\s*\(|(?:totalSupply|_totalSupply)\s*(?:-=|=)|(?:supply|sharesSupply)\s*(?:-=|=)",
+    re.I,
+)
+_SUPPLY_REF = re.compile(r"\b(?:totalSupply|_totalSupply|supply|sharesSupply)\s*(?:\(\s*\))?", re.I)
+_ASSET_POOL_REF = re.compile(
+    r"totalAssets\s*\(|balanceOf\s*\(\s*address\s*\(\s*this\s*\)\s*\)|poolBalance|reserve|cash|liquidity|underlying",
+    re.I,
+)
+_PAYOUT_SINK = re.compile(r"\.(?:safeTransfer|transfer)\s*\(|call\s*\{|_withdraw\s*\(|sendValue\s*\(", re.I)
+_PAYOUT_ASSIGN = re.compile(r"\b(?:assets|amountOut|withdrawAmount|payout|redeemAmount|value)\s*=", re.I)
+
+
+class RedemptionAfterSupplyBurnDetector(Detector):
+    name = "redemption_after_supply_burn"
+
+    def run(self, ctx: TargetContext) -> list[FindingCandidate]:
+        out: list[FindingCandidate] = []
+        for path, src in ctx.source_files.items():
+            if not src:
+                continue
+            for fname, _params, tail, body in iter_function_bodies(src):
+                if not _REDEEM_FN.search(fname) or re.search(r"\b(view|pure)\b", tail, re.I):
+                    continue
+                burn = _SUPPLY_BURN.search(body)
+                if not burn:
+                    continue
+                post_burn = body[burn.end():]
+                if not (
+                    _SUPPLY_REF.search(post_burn)
+                    and _ASSET_POOL_REF.search(post_burn)
+                    and (_PAYOUT_ASSIGN.search(post_burn) or _PAYOUT_SINK.search(post_burn))
+                    and _PAYOUT_SINK.search(post_burn)
+                ):
+                    continue
+                out.append(_finding(
+                    self.name,
+                    "redemption_math_after_supply_burn",
+                    f"Redeem/withdraw computes payout after burning shares/supply: {fname}",
+                    (
+                        f"`{fname}` burns shares or reduces total supply before using totalSupply/"
+                        "pool assets to compute or transfer the redemption payout. The denominator "
+                        "can be artificially reduced before pro-rata math, overpaying the redeemer "
+                        "and draining the vault/index (Thetanuts Index redemption-math class)."
+                    ),
+                    9.0,
+                    7.2,
+                    "critical",
+                    "redemption_math_after_supply_burn",
+                    fname,
+                    lead_only=False,
+                    tests=[
+                        "Unit/fork: compare redeem payout when assets are calculated before vs after burning shares.",
+                        "Assert value conservation: payout <= shares * totalAssetsBefore / totalSupplyBefore.",
+                        "Check whether the contract snapshots totalSupplyBefore before mutating supply.",
+                    ],
+                    extra={"file": path},
+                ))
+        return out
+
+
+# --------------------------------------------------------------------------- #
+# INK / whitelist mint class: claim authorization without replay/claim marker
+# --------------------------------------------------------------------------- #
+_CLAIM_FN = re.compile(r"(claim|whitelist|airdrop|allowlist|mint)", re.I)
+_WHITELIST_AUTH = re.compile(
+    r"MerkleProof|merkle|ecrecover|ECDSA|isValidSignature|signature|signer|whitelist|allowlist",
+    re.I,
+)
+_CLAIM_VALUE = re.compile(r"_mint\s*\(|\.(?:safeTransfer|transfer)\s*\(|claimable|amount", re.I)
+_CLAIM_MARKER = re.compile(
+    r"claimed\s*\[|hasClaimed\s*\[|isClaimed\s*\[|nullifier|nonce|_useNonce|bitmap|BitMaps|"
+    r"claimId|used\s*\[|consumed\s*\[",
+    re.I,
+)
+
+
+class WhitelistClaimReplayDetector(Detector):
+    name = "whitelist_claim_replay"
+
+    def run(self, ctx: TargetContext) -> list[FindingCandidate]:
+        out: list[FindingCandidate] = []
+        for path, src in ctx.source_files.items():
+            if not src:
+                continue
+            for fname, _params, tail, body in iter_function_bodies(src):
+                if not _CLAIM_FN.search(fname) or re.search(r"\b(view|pure)\b", tail, re.I):
+                    continue
+                if not (_WHITELIST_AUTH.search(body) and _CLAIM_VALUE.search(body)):
+                    continue
+                if _CLAIM_MARKER.search(body):
+                    continue
+                out.append(_finding(
+                    self.name,
+                    "whitelist_claim_no_replay_marker",
+                    f"Whitelist/signature claim moves value without a visible claimed/nullifier marker: {fname}",
+                    (
+                        f"`{fname}` appears to authorize a whitelist/allowlist/signature claim and "
+                        "then mint or transfer value, but the function does not visibly set or check "
+                        "a claimed/nullifier/nonce marker. A valid proof or signature may be reusable "
+                        "to claim repeatedly (INK Finance whitelist-claim class)."
+                    ),
+                    8.4,
+                    6.2,
+                    "high",
+                    "whitelist_claim_replay",
+                    fname,
+                    tests=[
+                        "Call the same claim proof/signature twice from the same account; second call must revert.",
+                        "Call the same proof/signature from a different account; verify recipient and amount are bound.",
+                        "Confirm the Merkle leaf/signature digest includes recipient, amount, chain id, contract, and nonce/index.",
+                    ],
+                    extra={"file": path},
+                ))
+        return out
+
+
+# --------------------------------------------------------------------------- #
+# Blockchain Bets / LML / Ocean class: live balance snapshot inflates rewards
+# --------------------------------------------------------------------------- #
+_REWARD_FN = re.compile(r"(claim|reward|harvest|settle|stake|bet|withdraw|distribute)", re.I)
+_LIVE_BALANCE_SNAPSHOT = re.compile(
+    r"\bbalanceOf\s*\(\s*(?:msg\.sender|account|user|player|owner|to|from)\b|"
+    r"IERC1155\s*\([^)]*\)\s*\.balanceOf\s*\(",
+    re.I,
+)
+_REWARD_MATH_OR_SINK = re.compile(
+    r"reward|points|stake|weight|share|payout|_mint\s*\(|\.(?:safeTransfer|transfer)\s*\(",
+    re.I,
+)
+_REWARD_CHECKPOINT = re.compile(
+    r"rewardDebt|lastClaim|lastReward|checkpoint|claimed|settled|paid|userIndex|accRewardPerShare|"
+    r"stakeOf\s*\[|locked\s*\[|depositId|snapshot",
+    re.I,
+)
+
+
+class BalanceSnapshotRewardInflationDetector(Detector):
+    name = "balance_snapshot_reward_inflation"
+
+    def run(self, ctx: TargetContext) -> list[FindingCandidate]:
+        out: list[FindingCandidate] = []
+        for path, src in ctx.source_files.items():
+            if not src:
+                continue
+            for fname, _params, tail, body in iter_function_bodies(src):
+                if not _REWARD_FN.search(fname) or re.search(r"\b(view|pure)\b", tail, re.I):
+                    continue
+                if not (_LIVE_BALANCE_SNAPSHOT.search(body) and _REWARD_MATH_OR_SINK.search(body)):
+                    continue
+                if _REWARD_CHECKPOINT.search(body):
+                    continue
+                out.append(_finding(
+                    self.name,
+                    "live_balance_reward_without_checkpoint",
+                    f"Reward/stake payout uses a live token balance without checkpoint/debt accounting: {fname}",
+                    (
+                        f"`{fname}` appears to compute reward/stake/points from a live ERC20/ERC1155 "
+                        "balance snapshot and move value, but no local stake lock, rewardDebt, "
+                        "last-claim, or checkpoint update is visible. Users may transfer/borrow/reuse "
+                        "the same balance around claims to inflate rewards (Blockchain Bets/Ocean/LML "
+                        "stake-inflation class)."
+                    ),
+                    8.2,
+                    5.6,
+                    "high",
+                    "balance_snapshot_reward_inflation",
+                    fname,
+                    tests=[
+                        "Fork/unit: transfer the token/NFT to account A, claim, transfer to B, claim again; total reward must not exceed one position's entitlement.",
+                        "Try flash-borrow or same-block balance movement before claim/settle.",
+                        "Confirm rewards are based on locked/checkpointed stake, not raw balanceOf at claim time.",
+                    ],
+                    extra={"file": path, "lead_only": True},
+                ))
+        return out

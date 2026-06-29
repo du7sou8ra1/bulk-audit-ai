@@ -92,6 +92,9 @@ The newest Ultra-deep v2 detector additions from the June 2026 incident notes ar
 
 - `amm_pair_reserve_desync`: catches AIDC / OLPC-LABUBU / JUDAO-style token logic that accumulates burn debt, later burns or transfers tokens out of the AMM pair, and calls `sync()`/`skim()`, deflating reserves and enabling paired-asset drains.
 - `erc4626_dual_asset_redeem_double_count`: catches Vault4626-style vaults where `totalAssets()` already quotes a non-asset/LP leg but `redeem()` separately transfers that same non-asset leg to the receiver.
+- `redemption_after_supply_burn`: catches Thetanuts-style redeem/withdraw paths that burn shares or reduce supply before calculating the pro-rata asset payout.
+- `whitelist_claim_replay`: catches INK-style whitelist/signature/Merkle claims that mint or transfer value without a visible claimed/nullifier/nonce marker.
+- `balance_snapshot_reward_inflation`: catches Blockchain Bets/Ocean/LML-style reward paths that pay from raw `balanceOf` snapshots without reward debt, checkpoint, or locked-stake accounting.
 - Semgrep hints now flag both classes early, and the exploit-regression fixture pack includes AIDC and Vault4626 cases so future changes must keep detecting them.
 
 ### Precision guardrails added in the latest upgrade
@@ -312,7 +315,7 @@ classes and precision layers.
 - Permit/signature replay, ECDSA/ecrecover zero-address, EIP-1271 spoofing.
 - Bridge accounting, retry/domain binding, keeper mutation, zero-root acceptance, cross-chain source auth.
 - ZK/settlement-boundary mismatch, verifier address spoofing, single-verifier bridge config.
-- Token/accounting logic: zero-value transfer reward checkpoint, zero-value transferFrom bypass, component share accounting, vault donation inflation, ERC-4626 dual-asset redeem double-counting, lending exchange-rate donation, unsafe mint math.
+- Token/accounting logic: zero-value transfer reward checkpoint, zero-value transferFrom bypass, component share accounting, vault donation inflation, ERC-4626 dual-asset redeem double-counting, redemption math after supply burn, whitelist claim replay, live-balance reward inflation, lending exchange-rate donation, unsafe mint math.
 - Hooks and callback risks: ERC777 balance bypass, hook callback auth, pair burn/sync issues, AMM pair reserve desync from deferred burn debt, receiver-hook credit, deposit callback CEI.
 - Oracle and market math: thin-liquidity spot oracle, read-only reserve reentrancy, CLMM tick boundary rounding, invariant precision loss, decimal unit mismatch.
 - 2026 classes: settlement count/boundary mismatch, flawed zero-value transfer reward stacking, callback payer/proof binding, memory-vs-storage persistence, signer allowlist, fee-on-transfer swap bounds, asymmetric SafeMath, and more.

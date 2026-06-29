@@ -5,6 +5,9 @@ from backend.detectors.base import TargetContext
 from backend.detectors.registry import get_detectors
 from backend.detectors.ultra_deep_v2 import (
     AllowanceDrainRouterDetector,
+    WhitelistClaimReplayDetector,
+    RedemptionAfterSupplyBurnDetector,
+    BalanceSnapshotRewardInflationDetector,
     AmmPairReserveDesyncDetector,
     BridgeRetryDomainBindingDetector,
     BridgeKeeperMutationDetector,
@@ -802,4 +805,98 @@ def test_vault4626_dual_asset_redeem_double_count_detector():
     """
     d = Erc4626DualAssetRedeemDoubleCountDetector()
     assert "erc4626_redeem_double_pays_quoted_non_asset_leg" in _rules(d, bad)
+    assert not _rules(d, good)
+
+
+
+def test_message17_gap_detectors_registered_in_v2():
+    names = {d.name for d in get_detectors("ultra-deep-v2")}
+    assert "redemption_after_supply_burn" in names
+    assert "whitelist_claim_replay" in names
+    assert "balance_snapshot_reward_inflation" in names
+
+
+def test_redemption_after_supply_burn_detector():
+    bad = """
+    contract BadIndex {
+      IERC20 asset;
+      function totalSupply() public view returns (uint256) {}
+      function redeem(uint256 shares) external {
+        _burn(msg.sender, shares);
+        uint256 assets = shares * asset.balanceOf(address(this)) / totalSupply();
+        asset.transfer(msg.sender, assets);
+      }
+      function _burn(address,uint256) internal {}
+    }
+    """
+    good = """
+    contract SafeIndex {
+      IERC20 asset;
+      function totalSupply() public view returns (uint256) {}
+      function redeem(uint256 shares) external {
+        uint256 supplyBefore = totalSupply();
+        uint256 assets = shares * asset.balanceOf(address(this)) / supplyBefore;
+        _burn(msg.sender, shares);
+        asset.transfer(msg.sender, assets);
+      }
+      function _burn(address,uint256) internal {}
+    }
+    """
+    d = RedemptionAfterSupplyBurnDetector()
+    assert "redemption_math_after_supply_burn" in _rules(d, bad)
+    assert not _rules(d, good)
+
+
+def test_whitelist_claim_replay_detector():
+    bad = """
+    contract Claim {
+      function claim(bytes32[] calldata proof, uint256 amount) external {
+        require(MerkleProof.verify(proof, root, keccak256(abi.encode(msg.sender, amount))), "bad");
+        token.transfer(msg.sender, amount);
+      }
+    }
+    """
+    good = """
+    contract ClaimSafe {
+      mapping(address => bool) claimed;
+      function claim(bytes32[] calldata proof, uint256 amount) external {
+        require(!claimed[msg.sender], "claimed");
+        require(MerkleProof.verify(proof, root, keccak256(abi.encode(msg.sender, amount))), "bad");
+        claimed[msg.sender] = true;
+        token.transfer(msg.sender, amount);
+      }
+    }
+    """
+    d = WhitelistClaimReplayDetector()
+    assert "whitelist_claim_no_replay_marker" in _rules(d, bad)
+    assert not _rules(d, good)
+
+
+def test_balance_snapshot_reward_inflation_detector():
+    bad = """
+    contract Bets {
+      IERC1155 pass;
+      IERC20 reward;
+      function claimReward(uint256 id) external {
+        uint256 bal = pass.balanceOf(msg.sender, id);
+        uint256 payout = bal * rewardPerPass[id];
+        reward.transfer(msg.sender, payout);
+      }
+    }
+    """
+    good = """
+    contract BetsSafe {
+      IERC1155 pass;
+      IERC20 reward;
+      mapping(address => uint256) rewardDebt;
+      function claimReward(uint256 id) external {
+        uint256 bal = pass.balanceOf(msg.sender, id);
+        uint256 payout = bal * rewardPerPass[id] - rewardDebt[msg.sender];
+        rewardDebt[msg.sender] += payout;
+        reward.transfer(msg.sender, payout);
+      }
+    }
+    """
+    d = BalanceSnapshotRewardInflationDetector()
+    assert "live_balance_reward_without_checkpoint" in _rules(d, bad)
     assert not _rules(d, good)

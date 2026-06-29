@@ -183,3 +183,31 @@ rules:
       include: ["*.sol"]
     patterns:
       - pattern-regex: '(?s)function\s+totalAssets\s*\([^)]*\)[\s\S]{0,1800}(nonAsset|token0|token1|weth|quote)[\s\S]{0,2200}function\s+(redeem|withdraw|exit)\w*\s*\([^)]*\)[\s\S]{0,1800}(convertToAssets|previewRedeem|totalAssets)[\s\S]{0,1000}(nonAsset|token0|token1|weth|quote)[\s\S]{0,500}(safeTransfer|transfer)\s*\('
+
+
+  - id: solidity-redemption-math-after-supply-burn
+    languages: [generic]
+    severity: ERROR
+    message: "Redeem/withdraw burns shares before computing payout from totalSupply/assets; check over-redemption math."
+    paths:
+      include: ["*.sol"]
+    patterns:
+      - pattern-regex: '(?s)function\s+\w*(redeem|withdraw|exit)\w*\s*\([^)]*\)[^{;]*\{[\s\S]{0,900}(_burn\s*\(|(_?totalSupply|supply)\s*(-=|=))[\s\S]{0,1200}(totalSupply\s*\(|_totalSupply|balanceOf\s*\(\s*address\s*\(\s*this\s*\)\s*\)|totalAssets\s*\()[\s\S]{0,900}(transfer|safeTransfer|call\s*\{)'
+
+  - id: solidity-whitelist-claim-no-replay-marker
+    languages: [generic]
+    severity: WARNING
+    message: "Whitelist/signature claim mints/transfers value; verify claimed/nullifier/nonce marker blocks replay."
+    paths:
+      include: ["*.sol"]
+    patterns:
+      - pattern-regex: '(?s)function\s+\w*(claim|whitelist|allowlist|airdrop|mint)\w*\s*\([^)]*\)[^{;]*\{[\s\S]{0,1200}(MerkleProof|merkle|ecrecover|ECDSA|signature|signer|whitelist|allowlist)[\s\S]{0,1200}(_mint\s*\(|transfer\s*\()'
+
+  - id: solidity-live-balance-reward-without-checkpoint
+    languages: [generic]
+    severity: WARNING
+    message: "Reward/stake path uses live balanceOf; verify rewardDebt/checkpoint/locked stake prevents balance-movement inflation."
+    paths:
+      include: ["*.sol"]
+    patterns:
+      - pattern-regex: '(?s)function\s+\w*(claim|reward|harvest|settle|stake|bet)\w*\s*\([^)]*\)[^{;]*\{[\s\S]{0,1400}balanceOf\s*\(\s*(msg\.sender|account|user|player)[\s\S]{0,1400}(reward|points|payout|transfer|_mint)'
