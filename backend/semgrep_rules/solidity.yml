@@ -164,3 +164,22 @@ rules:
       include: ["*.sol"]
     patterns:
       - pattern-regex: '(?s)(create2|CREATE2|salt|extcodesize|\.code\.length)[\s\S]{0,800}(allow|trust|whitelist|implementation|module|adapter|strategy|target)'
+
+
+  - id: solidity-amm-pair-burn-sync-reserve-desync
+    languages: [generic]
+    severity: ERROR
+    message: "Pair balance is burned/transferred before sync(); verify reserve-desync / burn-debt exploitability."
+    paths:
+      include: ["*.sol"]
+    patterns:
+      - pattern-regex: '(?s)(_update|_transfer|_burn|burn)\s*\(\s*\w*(pair|pool|uniswap|pancake|amm)\w*[\s\S]{0,700}\.\s*(sync|skim)\s*\('
+
+  - id: solidity-erc4626-dual-asset-redeem-double-count
+    languages: [generic]
+    severity: ERROR
+    message: "ERC4626 totalAssets values a non-asset leg while redeem transfers the non-asset separately; check double payment."
+    paths:
+      include: ["*.sol"]
+    patterns:
+      - pattern-regex: '(?s)function\s+totalAssets\s*\([^)]*\)[\s\S]{0,1800}(nonAsset|token0|token1|weth|quote)[\s\S]{0,2200}function\s+(redeem|withdraw|exit)\w*\s*\([^)]*\)[\s\S]{0,1800}(convertToAssets|previewRedeem|totalAssets)[\s\S]{0,1000}(nonAsset|token0|token1|weth|quote)[\s\S]{0,500}(safeTransfer|transfer)\s*\('

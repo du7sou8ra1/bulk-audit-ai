@@ -1412,3 +1412,169 @@ class CustodySweepCentralizationDetector(Detector):
                     extra={"file": path, "documented_centralization": True, "lead_only": True},
                 ))
         return out
+
+
+
+# --------------------------------------------------------------------------- #
+# AIDC / OLPC-LABUBU / JUDAO class: deferred burn debt hits AMM pair reserves
+# --------------------------------------------------------------------------- #
+_PAIR_ID = r"(?:(?:[A-Za-z_]\w*)?(?:pair|pool|amm|uniswap|pancake|lpToken|lpPair)\w*|pair|pool|lp|amm)"
+_DEAD_ID = (
+    r"(?:(?:[A-Za-z_]\w*)?(?:dead|burn|blackhole|null|zero)\w*|"
+    r"address\s*\(\s*0\s*\)|0x0{20,40}|0x0{0,36}dead)"
+)
+_PAIR_OUT_PATTERNS = (
+    re.compile(
+        r"(?P<op>(?:super\s*\.\s*)?_update|(?:super\s*\.\s*)?_transfer|_transfer)"
+        r"\s*\(\s*(?P<pair>" + _PAIR_ID + r")\s*,\s*(?P<dst>" + _DEAD_ID + r")\s*,",
+        re.I,
+    ),
+    re.compile(r"(?P<op>_burn|burn)\s*\(\s*(?P<pair>" + _PAIR_ID + r")\s*,", re.I),
+    re.compile(r"_balances\s*\[\s*(?P<pair>" + _PAIR_ID + r")\s*\]\s*(?:-=|=)", re.I),
+)
+_SYNC_OR_SKIM = re.compile(r"\.\s*(sync|skim)\s*\(", re.I)
+_DEFERRED_BURN_WRITE = re.compile(
+    r"\b((?:[A-Za-z_]\w*)?(?:accumulat|pending|queued|deferred)\w*burn\w*)\s*(?:\+=|=)",
+    re.I,
+)
+
+
+def _pair_out_evidence(body: str) -> dict | None:
+    for pat in _PAIR_OUT_PATTERNS:
+        m = pat.search(body)
+        if m:
+            ev = {"pair_expr": m.groupdict().get("pair") or "pair-like balance"}
+            if m.groupdict().get("op"):
+                ev["pair_move_op"] = m.group("op")
+            if m.groupdict().get("dst"):
+                ev["pair_move_destination"] = m.group("dst")
+            return ev
+    return None
+
+
+class AmmPairReserveDesyncDetector(Detector):
+    name = "amm_pair_reserve_desync"
+
+    def run(self, ctx: TargetContext) -> list[FindingCandidate]:
+        out: list[FindingCandidate] = []
+        for path, src in ctx.source_files.items():
+            if not src:
+                continue
+            burn_debt_vars = {m.group(1) for m in _DEFERRED_BURN_WRITE.finditer(src)}
+            for fname, _params, tail, body in iter_function_bodies(src):
+                if re.search(r"\b(view|pure)\b", tail, re.I):
+                    continue
+                pair_ev = _pair_out_evidence(body)
+                if not pair_ev or not _SYNC_OR_SKIM.search(body):
+                    continue
+                uses_deferred_debt = any(var in body for var in burn_debt_vars)
+                rule_id = (
+                    "deferred_burn_debt_burns_pair_then_sync"
+                    if uses_deferred_debt
+                    else "pair_balance_burn_then_sync_reserve_desync"
+                )
+                title = (
+                    f"Deferred burn debt is executed against the AMM pair before sync(): {fname}"
+                    if uses_deferred_debt
+                    else f"AMM pair balance is burned/transferred before sync(): {fname}"
+                )
+                out.append(_finding(
+                    self.name,
+                    rule_id,
+                    title,
+                    (
+                        f"`{fname}` force-moves or burns tokens out of a pair-like address "
+                        "and immediately calls pair.sync()/skim(). If this path is reachable "
+                        "from a sell/transfer hook or a deferred burn accumulator, an attacker "
+                        "can shrink the token reserve used by the AMM and swap out the paired "
+                        "asset at an artificial price. This covers the AIDC and OLPC/LABUBU "
+                        "2026 reserve-desync family."
+                    ),
+                    9.3 if uses_deferred_debt else 9.0,
+                    8.2 if uses_deferred_debt else 7.4,
+                    "critical",
+                    "amm_pair_burn_sync_reserve_desync",
+                    fname,
+                    lead_only=False,
+                    tests=[
+                        "Fork PoC: accumulate burn debt through a sell/transfer, trigger the burn path, then compare pair reserves before/after sync().",
+                        "Swap after the forced pair burn and verify the paired asset can be drained or mispriced.",
+                        "Confirm the burn amount was not deducted from the seller before it was later burned from the pair.",
+                    ],
+                    extra={
+                        "file": path,
+                        "deferred_burn_vars": sorted(burn_debt_vars),
+                        **pair_ev,
+                    },
+                ))
+        return out
+
+
+# --------------------------------------------------------------------------- #
+# Vault4626 class: totalAssets quotes non-asset leg, redeem transfers it again
+# --------------------------------------------------------------------------- #
+_NON_ASSET_WORD = re.compile(r"nonAsset|otherAsset|token0|token1|weth|wrapped|quote", re.I)
+_QUOTE_OR_TWAP = re.compile(r"quote|twap|getQuoteAtTick|consult|slot0|sqrtPriceX96|OracleLibrary", re.I)
+_TOTAL_ASSETS_RETURN = re.compile(r"return[\s\S]{0,900}(nonAsset|otherAsset|token0|token1|weth|quote)", re.I)
+_REDEEM_ASSET_CALC = re.compile(r"convertToAssets\s*\(|previewRedeem\s*\(|totalAssets\s*\(", re.I)
+_NON_ASSET_TRANSFER = re.compile(
+    r"(?:_safeTransfer|safeTransfer|transfer)\s*\(\s*"
+    r"(?:[A-Za-z_]\w*)?(?:nonAsset|otherAsset|weth|token0|token1|quote)\w*"
+    r"\s*,\s*(?:receiver|recipient|to|owner)\b"
+    r"|(?:[A-Za-z_]\w*)?(?:nonAsset|otherAsset|weth|token0|token1|quote)\w*"
+    r"\s*\.\s*(?:safeTransfer|transfer)\s*\(\s*(?:receiver|recipient|to|owner)\b",
+    re.I,
+)
+
+
+class Erc4626DualAssetRedeemDoubleCountDetector(Detector):
+    name = "erc4626_dual_asset_redeem_double_count"
+
+    def run(self, ctx: TargetContext) -> list[FindingCandidate]:
+        out: list[FindingCandidate] = []
+        for path, src in ctx.source_files.items():
+            if not src:
+                continue
+            total_assets_fns: list[str] = []
+            function_bodies = list(iter_function_bodies(src))
+            for fname, _params, _tail, body in function_bodies:
+                if fname != "totalAssets":
+                    continue
+                if _NON_ASSET_WORD.search(body) and _QUOTE_OR_TWAP.search(body) and _TOTAL_ASSETS_RETURN.search(body):
+                    total_assets_fns.append(fname)
+            if not total_assets_fns:
+                continue
+
+            for fname, _params, tail, body in function_bodies:
+                if not re.search(r"redeem|withdraw|exit", fname, re.I):
+                    continue
+                if re.search(r"\b(view|pure)\b", tail, re.I):
+                    continue
+                if not (_REDEEM_ASSET_CALC.search(body) and _NON_ASSET_TRANSFER.search(body)):
+                    continue
+                out.append(_finding(
+                    self.name,
+                    "erc4626_redeem_double_pays_quoted_non_asset_leg",
+                    f"ERC4626 redeem appears to pay a quoted non-asset leg twice: {fname}",
+                    (
+                        f"`totalAssets()` values a non-asset/LP leg through a quote/TWAP, then "
+                        f"`{fname}` calculates redeemable assets from that total and separately "
+                        "transfers the non-asset token to the receiver. A redeemer can donate or "
+                        "control the non-asset balance, inflate totalAssets, and receive both the "
+                        "quoted value and the actual non-asset tokens. This is the Vault4626 "
+                        "2026 double-pay redeem class."
+                    ),
+                    9.2,
+                    7.8,
+                    "critical",
+                    "erc4626_dual_asset_redeem_double_count",
+                    fname,
+                    lead_only=False,
+                    tests=[
+                        "Fork/unit PoC: deposit enough underlying to own most shares, donate non-asset token, then redeem and compare paid asset + non-asset value against pro-rata TVL.",
+                        "Check whether totalAssets() already includes the same nonAssetToSend value that redeem transfers separately.",
+                        "Assert redeem value conservation: assetValuePaid + nonAssetValuePaid <= shares / totalSupplyBefore * totalAssetsBefore.",
+                    ],
+                    extra={"file": path, "total_assets_function": "totalAssets"},
+                ))
+        return out

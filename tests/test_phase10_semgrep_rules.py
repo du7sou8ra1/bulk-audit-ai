@@ -14,5 +14,7 @@ def test_weird_hunt_semgrep_rules_are_registered():
         "solidity-trycatch-swallowed-finalization",
         "solidity-batch-loop-value-mutation",
         "solidity-create2-address-only-trust",
+        "solidity-erc4626-dual-asset-redeem-double-count",
+        "solidity-amm-pair-burn-sync-reserve-desync",
     }:
         assert f"id: {rule_id}" in text

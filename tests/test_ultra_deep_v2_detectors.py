@@ -2,8 +2,10 @@
 from pathlib import Path
 
 from backend.detectors.base import TargetContext
+from backend.detectors.registry import get_detectors
 from backend.detectors.ultra_deep_v2 import (
     AllowanceDrainRouterDetector,
+    AmmPairReserveDesyncDetector,
     BridgeRetryDomainBindingDetector,
     BridgeKeeperMutationDetector,
     BridgeZeroRootAcceptanceDetector,
@@ -11,6 +13,7 @@ from backend.detectors.ultra_deep_v2 import (
     ComponentShareAccountingDetector,
     CustodySweepCentralizationDetector,
     DecimalUnitMismatchDetector,
+    Erc4626DualAssetRedeemDoubleCountDetector,
     Erc777HookBalanceBypassDetector,
     FlashCycleRoundingWithdrawDetector,
     InvariantPrecisionLossDetector,
@@ -701,3 +704,102 @@ def test_custody_sweep_centralization():
     d = CustodySweepCentralizationDetector()
     assert "single_admin_can_sweep_custody" in _rules(d, bad)
     assert "single_admin_can_sweep_custody" not in _rules(d, good)
+
+
+
+def test_recent_incident_detectors_registered_in_v2():
+    names = {d.name for d in get_detectors("ultra-deep-v2")}
+    assert "amm_pair_reserve_desync" in names
+    assert "erc4626_dual_asset_redeem_double_count" in names
+
+
+def test_aidc_deferred_burn_debt_pair_sync_detector():
+    bad = """
+    interface IUniswapV2Pair { function sync() external; }
+    contract AIDCToken {
+      address public uniswapPair;
+      address public deadWallet;
+      uint256 public accumulatedBurnAmount;
+      uint256 public FEE_DENOMINATOR = 10000;
+      function _sellTransfer(address from, address to, uint256 amount) private {
+        uint256 feeAmount = amount * 500 / FEE_DENOMINATOR;
+        uint256 communityFee = 0;
+        uint256 burnAmount = amount * 3000 / FEE_DENOMINATOR;
+        accumulatedBurnAmount += burnAmount;
+        super._update(from, to, (amount - feeAmount - communityFee));
+      }
+      function _executeAccumulatedBurn() internal {
+        if (accumulatedBurnAmount == 0) return;
+        uint256 pairBalance = balanceOf(uniswapPair);
+        uint256 actualBurn = accumulatedBurnAmount > pairBalance ? pairBalance : accumulatedBurnAmount;
+        if (actualBurn > 0) {
+          accumulatedBurnAmount -= actualBurn;
+          super._update(uniswapPair, deadWallet, actualBurn);
+          IUniswapV2Pair(uniswapPair).sync();
+        }
+      }
+      function balanceOf(address) public view returns (uint256) {}
+    }
+    """
+    good = """
+    interface IUniswapV2Pair { function sync() external; }
+    contract SafeToken {
+      address public uniswapPair;
+      address public deadWallet;
+      function burnTreasury(uint256 amount) internal {
+        super._update(address(this), deadWallet, amount);
+        IUniswapV2Pair(uniswapPair).sync();
+      }
+    }
+    """
+    d = AmmPairReserveDesyncDetector()
+    assert "deferred_burn_debt_burns_pair_then_sync" in _rules(d, bad)
+    assert not _rules(d, good)
+
+
+def test_vault4626_dual_asset_redeem_double_count_detector():
+    bad = """
+    contract Vault4626Like {
+      address asset;
+      address nonAssetToken;
+      function totalSupply() public view returns (uint256) {}
+      function convertToAssets(uint256 shares) public view returns (uint256) {
+        return shares * totalAssets() / totalSupply();
+      }
+      function totalAssets() public view returns (uint256) {
+        uint256 usdcInLp = 10;
+        uint256 wethInLp = 2;
+        uint256 wethQuoted = OracleLibrary.getQuoteAtTick(1, uint128(wethInLp), nonAssetToken, asset);
+        uint256 vaultNonAssetQuoted = OracleLibrary.getQuoteAtTick(
+          1,
+          uint128(IERC20(nonAssetToken).balanceOf(address(this))),
+          nonAssetToken,
+          asset
+        );
+        return IERC20(asset).balanceOf(address(this)) + usdcInLp + wethQuoted + vaultNonAssetQuoted;
+      }
+      function redeem(uint256 shares, address receiver, address owner) public returns (uint256 assets) {
+        assets = convertToAssets(shares);
+        uint256 nonAssetToSend = IERC20(nonAssetToken).balanceOf(address(this)) * shares / totalSupply();
+        IERC20(asset).transfer(receiver, assets);
+        _safeTransfer(nonAssetToken, receiver, nonAssetToSend);
+      }
+      function _safeTransfer(address token, address to, uint256 amount) internal {}
+    }
+    """
+    good = """
+    contract SafeVault {
+      address asset;
+      function totalSupply() public view returns (uint256) {}
+      function totalAssets() public view returns (uint256) {
+        return IERC20(asset).balanceOf(address(this));
+      }
+      function redeem(uint256 shares, address receiver, address owner) public returns (uint256 assets) {
+        assets = shares * totalAssets() / totalSupply();
+        IERC20(asset).transfer(receiver, assets);
+      }
+    }
+    """
+    d = Erc4626DualAssetRedeemDoubleCountDetector()
+    assert "erc4626_redeem_double_pays_quoted_non_asset_leg" in _rules(d, bad)
+    assert not _rules(d, good)

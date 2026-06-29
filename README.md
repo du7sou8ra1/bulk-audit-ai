@@ -76,7 +76,7 @@ backend/outputs/scans/<scan_id>/<address>/
 - Proxy intelligence: EIP-1967 implementation/admin slots, owner/admin classifier, proxy/implementation merge.
 - Bytecode intelligence: selector clusters, opcode risk signals, closed-source surface hints.
 - Bytecode probes: selector-specific fork probe plans for high-risk bytecode surfaces.
-- 2020-2026 exploit detectors: bridge replay/domain binding, settlement-boundary mismatch, zero-value transfer reward stacking, ERC777 hook accounting, read-only reserve reentrancy, unsafe mint math, CLMM tick boundary rounding, lending donation exchange-rate manipulation, verifier spoofing, upgrade/admin blast radius, and more.
+- 2020-2026 exploit detectors: bridge replay/domain binding, settlement-boundary mismatch, zero-value transfer reward stacking, ERC777 hook accounting, read-only reserve reentrancy, unsafe mint math, CLMM tick boundary rounding, lending donation exchange-rate manipulation, AMM pair burn/sync reserve desync, ERC-4626 dual-asset redeem double-counting, verifier spoofing, upgrade/admin blast radius, and more.
 - Weird-hunt detector pack: actual-received accounting, Merkle leaf binding, bitmap claim collision, bridge replay keys, address aliasing, oracle freshness/sequencer, TWAP cardinality, forced ETH accounting, CREATE2/metamorphic trust, try/catch finalization, reward-debt order, zero-supply accumulators, position split/merge, governance snapshot bypass, pause bypass, multicall state cache, WAD/RAY unit mismatch, duplicate batch items, and semantic taint value-flow leads.
 - Semantic index: shared Solidity facts for params, modifiers, guards, reads/writes, calls, decoded fields, events, mappings, external calls, and value sinks.
 - Taint/dataflow core: caller/calldata/proof/oracle sources into value-transfer, delegatecall, upgrade, replay-marker, and accounting-write sinks, including simple external -> internal helper paths.
@@ -84,6 +84,15 @@ backend/outputs/scans/<scan_id>/<address>/
 - Adversarial refuter: independent review pass that tries to disprove each candidate before final scoring.
 - Value-context probe: read-only balance/asset/totalSupply/totalAssets checks plus ABI/source value-flow hints. Unknown RPC data never suppresses a bug by itself.
 - Precision guardrails: caller-bound `transferFrom(msg.sender, ...)` false-positive gate, critical-value gate, and pattern-prior context.
+
+
+### Latest incident additions
+
+The newest Ultra-deep v2 detector additions from the June 2026 incident notes are:
+
+- `amm_pair_reserve_desync`: catches AIDC / OLPC-LABUBU / JUDAO-style token logic that accumulates burn debt, later burns or transfers tokens out of the AMM pair, and calls `sync()`/`skim()`, deflating reserves and enabling paired-asset drains.
+- `erc4626_dual_asset_redeem_double_count`: catches Vault4626-style vaults where `totalAssets()` already quotes a non-asset/LP leg but `redeem()` separately transfers that same non-asset leg to the receiver.
+- Semgrep hints now flag both classes early, and the exploit-regression fixture pack includes AIDC and Vault4626 cases so future changes must keep detecting them.
 
 ### Precision guardrails added in the latest upgrade
 
@@ -303,8 +312,8 @@ classes and precision layers.
 - Permit/signature replay, ECDSA/ecrecover zero-address, EIP-1271 spoofing.
 - Bridge accounting, retry/domain binding, keeper mutation, zero-root acceptance, cross-chain source auth.
 - ZK/settlement-boundary mismatch, verifier address spoofing, single-verifier bridge config.
-- Token/accounting logic: zero-value transfer reward checkpoint, zero-value transferFrom bypass, component share accounting, vault donation inflation, lending exchange-rate donation, unsafe mint math.
-- Hooks and callback risks: ERC777 balance bypass, hook callback auth, pair burn/sync issues, receiver-hook credit, deposit callback CEI.
+- Token/accounting logic: zero-value transfer reward checkpoint, zero-value transferFrom bypass, component share accounting, vault donation inflation, ERC-4626 dual-asset redeem double-counting, lending exchange-rate donation, unsafe mint math.
+- Hooks and callback risks: ERC777 balance bypass, hook callback auth, pair burn/sync issues, AMM pair reserve desync from deferred burn debt, receiver-hook credit, deposit callback CEI.
 - Oracle and market math: thin-liquidity spot oracle, read-only reserve reentrancy, CLMM tick boundary rounding, invariant precision loss, decimal unit mismatch.
 - 2026 classes: settlement count/boundary mismatch, flawed zero-value transfer reward stacking, callback payer/proof binding, memory-vs-storage persistence, signer allowlist, fee-on-transfer swap bounds, asymmetric SafeMath, and more.
 - Weird-hunt classes: actual-received accounting, weak Merkle binding, bitmap claim aliasing, bridge replay keys, L1/L2 address alias mismatch, Chainlink freshness/sequencer checks, TWAP cardinality/period mistakes, forced ETH accounting, CREATE2/metamorphic trust, try/catch finalization, reward-debt update order, zero-supply reward accumulators, position split/merge duplication, governance snapshot bypass, pause bypass, multicall `msg.value` reuse, WAD/RAY/unit mismatch, duplicate batch items, and cross-function calldata-to-value-sink taint flow.

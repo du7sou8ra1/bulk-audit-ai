@@ -72,6 +72,7 @@ from .ultra_deep import (
 )
 from .ultra_deep_v2 import (
     AllowanceDrainRouterDetector,
+    AmmPairReserveDesyncDetector,
     BridgeRetryDomainBindingDetector,
     BridgeKeeperMutationDetector,
     BridgeZeroRootAcceptanceDetector,
@@ -79,6 +80,7 @@ from .ultra_deep_v2 import (
     ComponentShareAccountingDetector,
     CustodySweepCentralizationDetector,
     DecimalUnitMismatchDetector,
+    Erc4626DualAssetRedeemDoubleCountDetector,
     Erc777HookBalanceBypassDetector,
     FlashCycleRoundingWithdrawDetector,
     InvariantPrecisionLossDetector,
@@ -178,6 +180,7 @@ ULTRA_EXTRA_DETECTORS: list[type[Detector]] = [
 ULTRA_DEEP_V2_EXTRA_DETECTORS: list[type[Detector]] = [
     CorpusPatternDetector,
     BytecodePeripheryDetector,
+    AmmPairReserveDesyncDetector,
     SettlementBoundaryMismatchDetector,
     BridgeRetryDomainBindingDetector,
     DecimalUnitMismatchDetector,
@@ -186,6 +189,7 @@ ULTRA_DEEP_V2_EXTRA_DETECTORS: list[type[Detector]] = [
     SingleVerifierBridgeConfigDetector,
     AllowanceDrainRouterDetector,
     ZeroTransferRewardCheckpointDetector,
+    Erc4626DualAssetRedeemDoubleCountDetector,
     Erc777HookBalanceBypassDetector,
     ReadOnlyReserveReentrancyDetector,
     BridgeKeeperMutationDetector,
