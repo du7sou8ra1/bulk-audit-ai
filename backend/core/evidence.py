@@ -127,6 +127,7 @@ def build_ai_packet(
         "tool_summaries": tool_summaries,
         "bytecode_intel": _trim(bytecode_meta, max_str=900, max_list=8),
         "bytecode_probes": _trim(bytecode_probe_meta, max_str=900, max_list=8),
+        "protocol_graph": _trim(getattr(ctx, "protocol_graph", None) or {}, max_str=900, max_list=10),
         "onchain_checks": onchain_checks,
         "source_snippets": snippets,
         "next_tests_suggested": candidate.next_tests,

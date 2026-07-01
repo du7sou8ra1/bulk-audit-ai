@@ -79,6 +79,7 @@ backend/outputs/scans/<scan_id>/<address>/
 - 2020-2026 exploit detectors: bridge replay/domain binding, settlement-boundary mismatch, zero-value transfer reward stacking, ERC777 hook accounting, read-only reserve reentrancy, unsafe mint math, CLMM tick boundary rounding, lending donation exchange-rate manipulation, economic oracle/lending bad-debt coupling, AMM pair burn/sync reserve desync, ERC-4626 dual-asset redeem double-counting, verifier spoofing, upgrade/admin blast radius, and more.
 - Weird-hunt detector pack: actual-received accounting, Merkle leaf binding, bitmap claim collision, bridge replay keys, address aliasing, oracle freshness/sequencer, TWAP cardinality, forced ETH accounting, CREATE2/metamorphic trust, try/catch finalization, reward-debt order, zero-supply accumulators, position split/merge, governance snapshot bypass, pause bypass, multicall state cache, WAD/RAY unit mismatch, duplicate batch items, and semantic taint value-flow leads.
 - Semantic index: shared Solidity facts for params, modifiers, guards, reads/writes, calls, decoded fields, events, mappings, external calls, and value sinks.
+- Protocol graph: cross-contract role graph that groups target, implementation/admin, oracle, lending controller, cToken/market, ERC-4626 wrapper, AMM pair, router, bridge, verifier, assets, and strategies; safe address getters become companion scan candidates.
 - Taint/dataflow core: caller/calldata/proof/oracle sources into value-transfer, delegatecall, upgrade, replay-marker, and accounting-write sinks, including simple external -> internal helper paths.
 - Invariant reasoner: LLM-assisted cross-function hypotheses over value-moving entrypoints.
 - Adversarial refuter: independent review pass that tries to disprove each candidate before final scoring.
@@ -322,7 +323,7 @@ classes and precision layers.
 - ZK/settlement-boundary mismatch, verifier address spoofing, single-verifier bridge config.
 - Token/accounting logic: zero-value transfer reward checkpoint, zero-value transferFrom bypass, component share accounting, vault donation inflation, ERC-4626 dual-asset redeem double-counting, redemption math after supply burn, whitelist claim replay, live-balance reward inflation, lending exchange-rate donation, unsafe mint math.
 - Hooks and callback risks: ERC777 balance bypass, hook callback auth, pair burn/sync issues, AMM pair reserve desync from deferred burn debt, receiver-hook credit, deposit callback CEI.
-- Oracle and market math: thin-liquidity spot oracle, economic oracle/lending bad-debt coupling, ERC-4626 exchange-rate collateral pricing, spot-priced leverage with liquidation caps, read-only reserve reentrancy, CLMM tick boundary rounding, invariant precision loss, decimal unit mismatch.
+- Oracle and market math: thin-liquidity spot oracle, protocol-graph-backed economic oracle/lending bad-debt coupling, ERC-4626 exchange-rate collateral pricing, spot-priced leverage with liquidation caps, read-only reserve reentrancy, CLMM tick boundary rounding, invariant precision loss, decimal unit mismatch.
 - 2026 classes: settlement count/boundary mismatch, flawed zero-value transfer reward stacking, callback payer/proof binding, memory-vs-storage persistence, signer allowlist, fee-on-transfer swap bounds, asymmetric SafeMath, and more.
 - Weird-hunt classes: actual-received accounting, weak Merkle binding, bitmap claim aliasing, bridge replay keys, L1/L2 address alias mismatch, Chainlink freshness/sequencer checks, TWAP cardinality/period mistakes, forced ETH accounting, CREATE2/metamorphic trust, try/catch finalization, reward-debt update order, zero-supply reward accumulators, position split/merge duplication, governance snapshot bypass, pause bypass, multicall `msg.value` reuse, WAD/RAY/unit mismatch, duplicate batch items, and cross-function calldata-to-value-sink taint flow.
 
@@ -438,10 +439,17 @@ contains deterministic exploited-contract regression fixtures for Aztec escape
 hatch, Aztec settlement-boundary, Polygon Royalties zero-transfer reward
 stacking, Euler donate-to-reserves, and Nomad zero-root acceptance.
 
+Elite Phase 12 is implemented: `backend/core/protocol_graph.py` builds a
+per-target and per-scan protocol graph from source, ABI, proxy data, semantic
+facts, typed external calls, and safe read-only address getters. It groups
+components such as oracle + Comptroller + cToken/market + ERC-4626 wrapper + AMM
+pair, writes `protocol_graph.json`, exposes a visible `protocol-graph` tool run,
+shows graph summaries in the UI, and feeds graph context into the
+`economic_oracle_lending` detector.
+
 Recommended next improvements:
 
-1. Add protocol graph and storage-layout hints for cross-contract bugs.
-2. Add bytecode/source alignment checks for proxy/module scans before AI review.
+1. Add automatic companion expansion with scope controls: when the graph resolves an oracle, Comptroller, cToken, vault wrapper, or AMM pair address, offer to enqueue those addresses in the same scan.
+2. Add storage-layout hints for cross-contract bugs and proxy/module scans before AI review.
 3. Add a CI command that runs the exploited-contract detector regression pack on
    every deploy and blocks promotion when an expected detector/rule is missing.
-4. Add a protocol graph that automatically scans companion contracts such as Comptroller, cToken, oracle, vault wrapper, and AMM pair together for cross-contract economic bugs.

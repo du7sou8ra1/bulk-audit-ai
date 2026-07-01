@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import {
   api,
   openScanSocket,
+  type ProtocolGraph,
   type ScanWithTargets,
   type Finding,
   type ScanEvent,
@@ -165,6 +166,95 @@ function FocusBadge({
     <span className="rounded-full border border-slate-800 bg-slate-950 px-2 py-0.5 text-xs text-slate-500">
       clean
     </span>
+  )
+}
+
+function scanGraphSurfaces(graph: ProtocolGraph | undefined) {
+  return Array.isArray(graph?.surfaces) ? graph.surfaces : []
+}
+
+function scanGraphCandidates(graph: ProtocolGraph | undefined) {
+  return Array.isArray(graph?.companion_scan_candidates)
+    ? graph.companion_scan_candidates
+    : []
+}
+
+function ScanProtocolGraphPanel({ graph }: { graph?: ProtocolGraph }) {
+  const surfaces = scanGraphSurfaces(graph)
+  const candidates = scanGraphCandidates(graph)
+  const summary = graph?.summary ?? {}
+  if (surfaces.length === 0 && candidates.length === 0) return null
+
+  return (
+    <div className="card p-4 mb-6">
+      <div className="mb-3 flex items-center justify-between gap-3 flex-wrap">
+        <div>
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-400">
+            Protocol graph
+          </h2>
+          <p className="mt-1 text-xs text-slate-500">
+            Cross-contract roles inferred from source, ABI, proxy data, and safe getters.
+          </p>
+        </div>
+        <div className="grid grid-cols-3 gap-2">
+          <MiniStat label="Surfaces" value={Number(summary.surface_count ?? surfaces.length)} />
+          <MiniStat label="Companions" value={Number(summary.companion_candidate_count ?? candidates.length)} />
+          <MiniStat label="Scanned" value={Number(summary.already_scanned_companions ?? 0)} />
+        </div>
+      </div>
+
+      {surfaces.length > 0 && (
+        <div className="mb-3 flex flex-wrap gap-2">
+          {surfaces.slice(0, 8).map((surface, idx) => (
+            <span
+              key={`${surface.id}-${surface.target_address ?? idx}`}
+              className="rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-xs text-amber-200"
+              title={surface.next || surface.title || surface.id}
+            >
+              {surface.id.replace(/_/g, ' ')}
+              {surface.target_address && (
+                <span className="ml-1 text-slate-400">{shortAddr(surface.target_address)}</span>
+              )}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {candidates.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[720px]">
+            <thead className="border-b border-slate-800">
+              <tr>
+                <th className="th">Role</th>
+                <th className="th">Component</th>
+                <th className="th">Address</th>
+                <th className="th">State</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-800">
+              {candidates.slice(0, 8).map((candidate, idx) => (
+                <tr key={`${candidate.role}-${candidate.label}-${idx}`}>
+                  <td className="td text-slate-300">{(candidate.role || 'unknown').replace(/_/g, ' ')}</td>
+                  <td className="td text-slate-400">{candidate.label || '—'}</td>
+                  <td className="td font-mono text-slate-400">
+                    {candidate.address ? shortAddr(candidate.address) : 'unresolved'}
+                  </td>
+                  <td className="td">
+                    {candidate.already_in_scan ? (
+                      <span className="text-emerald-300">in scan</span>
+                    ) : candidate.address ? (
+                      <span className="text-amber-300">scan next</span>
+                    ) : (
+                      <span className="text-slate-500">needs getter/source</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -725,6 +815,8 @@ export default function ScanDetail() {
           </span>
         </div>
       </div>
+
+      <ScanProtocolGraphPanel graph={scan.protocol_graph} />
 
       {/* Live log */}
       <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-400">

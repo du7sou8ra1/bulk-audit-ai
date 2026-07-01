@@ -1,12 +1,13 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { useParams } from 'react-router-dom'
-import { api, type TargetWithDetails, type ToolRun } from '../api'
+import { api, type ProtocolGraph, type TargetWithDetails, type ToolRun } from '../api'
 import {
   PageHeader,
   Spinner,
   ErrorBox,
   EmptyState,
   fmtDate,
+  shortAddr,
 } from '../components/ui'
 import StatusBadge from '../components/StatusBadge'
 import FindingCard from '../components/FindingCard'
@@ -108,6 +109,112 @@ function ToolRunRow({ run }: { run: ToolRun }) {
   )
 }
 
+function graphNodes(graph: ProtocolGraph | undefined) {
+  return Array.isArray(graph?.nodes) ? graph.nodes : []
+}
+
+function graphSurfaces(graph: ProtocolGraph | undefined) {
+  return Array.isArray(graph?.surfaces) ? graph.surfaces : []
+}
+
+function graphCandidates(graph: ProtocolGraph | undefined) {
+  return Array.isArray(graph?.companion_scan_candidates)
+    ? graph.companion_scan_candidates
+    : []
+}
+
+function roleText(value: string | null | undefined) {
+  return (value || 'unknown').replace(/_/g, ' ')
+}
+
+function ProtocolGraphPanel({ graph }: { graph?: ProtocolGraph }) {
+  const nodes = graphNodes(graph)
+  const surfaces = graphSurfaces(graph)
+  const candidates = graphCandidates(graph)
+  const components = nodes
+    .filter((node) => node.role && node.role !== 'target')
+    .slice(0, 12)
+
+  if (nodes.length === 0 && surfaces.length === 0 && candidates.length === 0) {
+    return null
+  }
+
+  return (
+    <div className="card p-4 mb-8">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-400">
+          Protocol graph
+        </h2>
+        <span className="text-xs text-slate-500">
+          {surfaces.length} surfaces · {candidates.length} companions
+        </span>
+      </div>
+
+      {surfaces.length > 0 && (
+        <div className="mb-4 flex flex-wrap gap-2">
+          {surfaces.slice(0, 6).map((surface) => (
+            <span
+              key={surface.id}
+              className="rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-xs text-amber-200"
+              title={surface.next || surface.title || surface.id}
+            >
+              {surface.id.replace(/_/g, ' ')}
+            </span>
+          ))}
+        </div>
+      )}
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <div>
+          <div className="mb-2 text-xs uppercase tracking-wide text-slate-500">
+            Components
+          </div>
+          {components.length === 0 ? (
+            <p className="text-sm text-slate-500">No companion components inferred.</p>
+          ) : (
+            <div className="space-y-2">
+              {components.map((node) => (
+                <div key={node.id} className="rounded-md border border-slate-800 bg-slate-950/50 px-3 py-2">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="truncate text-sm text-slate-200">{node.label || node.id}</span>
+                    <span className="text-xs text-emerald-300">{roleText(node.role)}</span>
+                  </div>
+                  <div className="mt-1 font-mono text-xs text-slate-500">
+                    {node.address ? shortAddr(node.address) : node.source || 'unresolved'}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div>
+          <div className="mb-2 text-xs uppercase tracking-wide text-slate-500">
+            Companion scan candidates
+          </div>
+          {candidates.length === 0 ? (
+            <p className="text-sm text-slate-500">No additional companion candidates.</p>
+          ) : (
+            <div className="space-y-2">
+              {candidates.slice(0, 8).map((candidate, idx) => (
+                <div key={`${candidate.role}-${candidate.label}-${idx}`} className="rounded-md border border-slate-800 bg-slate-950/50 px-3 py-2">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="truncate text-sm text-slate-200">{candidate.label || candidate.role || 'component'}</span>
+                    <span className="text-xs text-slate-400">{roleText(candidate.role)}</span>
+                  </div>
+                  <div className="mt-1 font-mono text-xs text-slate-500">
+                    {candidate.address ? shortAddr(candidate.address) : 'unresolved getter/source role'}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function ContractDetail() {
   const { id = '' } = useParams()
   const [target, setTarget] = useState<TargetWithDetails | null>(null)
@@ -204,6 +311,8 @@ export default function ContractDetail() {
           )}
         </div>
       </div>
+
+      <ProtocolGraphPanel graph={target.protocol_graph} />
 
       {/* Tool runs */}
       <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-400">

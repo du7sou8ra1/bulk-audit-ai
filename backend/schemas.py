@@ -138,6 +138,7 @@ class TargetOut(BaseModel):
 class TargetDetailOut(TargetOut):
     tool_runs: list[ToolRunOut] = Field(default_factory=list)
     findings: list[FindingOut] = Field(default_factory=list)
+    protocol_graph: dict = Field(default_factory=dict)
 
 
 class ScanOut(BaseModel):
@@ -162,6 +163,7 @@ class ScanOut(BaseModel):
 
 class ScanDetailOut(ScanOut):
     targets: list[TargetOut] = Field(default_factory=list)
+    protocol_graph: dict = Field(default_factory=dict)
 
 
 class DashboardStats(BaseModel):

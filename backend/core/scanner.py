@@ -45,6 +45,7 @@ from . import evidence as evidence_mod
 from . import flashloan_sim
 from . import fuzzing
 from . import poc_generator
+from . import protocol_graph as protocol_graph_mod
 from . import report_writer
 from .ai_reviewer import review_finding
 from .command_runner import which
@@ -212,6 +213,25 @@ async def run_scan_pipeline(scan_id: int, mgr: ScanManager) -> None:
                 _log(scan_id, f"target {tid} failed: {exc}")
 
     await asyncio.gather(*(process(tid) for tid in target_ids))
+
+    # Phase 12: merge per-target protocol graphs into a scan-level view.
+    try:
+        scan_graph = await asyncio.to_thread(
+            protocol_graph_mod.write_scan_protocol_graph,
+            scan_id,
+            get_settings().output_path / str(scan_id),
+        )
+        summary = scan_graph.get("summary") or {}
+        _log(
+            scan_id,
+            "protocol graph: "
+            f"{summary.get('target_graph_count', 0)} target graph(s), "
+            f"{summary.get('surface_count', 0)} surface(s), "
+            f"{summary.get('companion_candidate_count', 0)} companion candidate(s)",
+        )
+        hub.publish(scan_id, {"type": "scan_update", "protocol_graph": scan_graph})
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("scan protocol graph merge failed for %s: %s", scan_id, exc)
 
     # Finalize.
     with SessionLocal() as db:
@@ -431,6 +451,50 @@ async def process_target(
                 "findings": [],
                 "meta": {"error": str(exc)[:500]},
             }
+
+    # Phase 12: protocol-role graph. Runs after semantic facts so it can group
+    # oracle/controller/market/vault/AMM/bridge companions and expose scan
+    # candidates before detector scoring.
+    tr = _create_toolrun(target_id, "protocol-graph")
+    hub.publish(
+        scan_id,
+        {"type": "tool_update", "target_id": target_id, "tool": "protocol-graph", "status": "running"},
+    )
+    try:
+        graph_res = await asyncio.to_thread(
+            protocol_graph_mod.run_protocol_graph, ctx, workspace["base"]
+        )
+        ctx.protocol_graph = graph_res.meta
+        tool_outputs["protocol-graph"] = {
+            "summary": graph_res.summary,
+            "findings": graph_res.findings,
+            "status": graph_res.status,
+            "meta": graph_res.meta,
+        }
+        _finalize_toolrun(tr.id, graph_res)
+        _log(scan_id, f"[{address}] {graph_res.summary}")
+        hub.publish(
+            scan_id,
+            {"type": "tool_update", "target_id": target_id, "tool": "protocol-graph",
+             "status": graph_res.status, "summary": graph_res.summary},
+        )
+    except Exception as exc:
+        logger.warning("protocol graph failed for %s: %s", address, exc)
+        ctx.protocol_graph = None
+        graph_res = _skip_runner("protocol-graph", f"runner crashed: {exc}")
+        graph_res.status = "failed"
+        tool_outputs["protocol-graph"] = {
+            "summary": graph_res.summary,
+            "findings": [],
+            "status": graph_res.status,
+            "meta": {"error": str(exc)[:500]},
+        }
+        _finalize_toolrun(tr.id, graph_res)
+        hub.publish(
+            scan_id,
+            {"type": "tool_update", "target_id": target_id, "tool": "protocol-graph",
+             "status": graph_res.status, "summary": graph_res.summary},
+        )
 
     if _toggle(toggles, "value_context", s.enable_value_context):
         try:

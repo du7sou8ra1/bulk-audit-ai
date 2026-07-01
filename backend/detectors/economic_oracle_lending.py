@@ -61,6 +61,31 @@ _CIRCUIT_BREAKER_RE = re.compile(
 _TWAP_RE = re.compile(r"\b(twap|timeWeighted|observe\s*\(|cumulative|anchorPeriod)\b", re.IGNORECASE)
 
 
+def _graph_surface_ids(ctx: TargetContext) -> set[str]:
+    graph = getattr(ctx, "protocol_graph", None) or {}
+    return {str(surface.get("id") or "") for surface in graph.get("surfaces") or [] if isinstance(surface, dict)}
+
+
+def _graph_role_names(ctx: TargetContext) -> set[str]:
+    graph = getattr(ctx, "protocol_graph", None) or {}
+    return {str(node.get("role") or "") for node in graph.get("nodes") or [] if isinstance(node, dict)}
+
+
+def _graph_context(ctx: TargetContext) -> dict:
+    graph = getattr(ctx, "protocol_graph", None) or {}
+    surfaces = [
+        {"id": s.get("id"), "title": s.get("title"), "severity": s.get("severity")}
+        for s in (graph.get("surfaces") or [])
+        if isinstance(s, dict)
+    ]
+    companions = [
+        {"role": c.get("role"), "label": c.get("label"), "address": c.get("address"), "unresolved": c.get("unresolved")}
+        for c in (graph.get("companion_scan_candidates") or [])[:8]
+        if isinstance(c, dict)
+    ]
+    return {"surfaces": surfaces, "companions": companions} if surfaces or companions else {}
+
+
 def _window(source: str, needle: re.Pattern[str], *, before: int = 450, after: int = 1600) -> str:
     match = needle.search(source or "")
     if not match:
@@ -81,20 +106,30 @@ class EconomicOracleLendingDetector(Detector):
         text = ctx.all_source_text()
         if not text:
             return []
-        if not (_COMPOUND_ORACLE_TERMS_RE.search(text) or _BORROW_CONTEXT_RE.search(text)):
+        graph_surfaces = _graph_surface_ids(ctx)
+        graph_roles = _graph_role_names(ctx)
+        graph_has_economic_surface = bool({"oracle_lending", "erc4626_collateral_oracle"} & graph_surfaces)
+        graph_has_oracle_lending_roles = "oracle" in graph_roles and bool({"lending_controller", "lending_market"} & graph_roles)
+        if not (
+            _COMPOUND_ORACLE_TERMS_RE.search(text)
+            or _BORROW_CONTEXT_RE.search(text)
+            or graph_has_economic_surface
+            or graph_has_oracle_lending_roles
+        ):
             return []
 
         findings: list[FindingCandidate] = []
+        graph_context = _graph_context(ctx)
         for path, source in ctx.source_files.items():
             if not source:
                 continue
             if _has_compound_oracle_body(source):
-                findings.extend(self._compound_price_oracle_findings(path, source, text))
-            findings.extend(self._lending_flow_findings(path, source))
-            findings.extend(self._erc4626_lending_oracle_findings(path, source, text))
+                findings.extend(self._compound_price_oracle_findings(path, source, text, graph_context))
+            findings.extend(self._lending_flow_findings(path, source, graph_context))
+            findings.extend(self._erc4626_lending_oracle_findings(path, source, text, graph_context))
         return findings
 
-    def _compound_price_oracle_findings(self, path: str, source: str, all_text: str) -> list[FindingCandidate]:
+    def _compound_price_oracle_findings(self, path: str, source: str, all_text: str, graph_context: dict) -> list[FindingCandidate]:
         if not _COMPOUND_ORACLE_TERMS_RE.search(source + "\n" + all_text):
             return []
         if not _MUTABLE_PRICE_UPDATE_RE.search(source):
@@ -141,6 +176,7 @@ class EconomicOracleLendingDetector(Detector):
                 "needs_poc": True,
                 "unprivileged": True,
                 "onchain_detectable": "lead_only",
+                "protocol_graph": graph_context,
             },
             next_tests=[
                 "Scan the connected Comptroller/cToken market and confirm borrow/liquidation reads this oracle price.",
@@ -150,7 +186,7 @@ class EconomicOracleLendingDetector(Detector):
             affected_functions=["getUnderlyingPrice"],
         )]
 
-    def _lending_flow_findings(self, path: str, source: str) -> list[FindingCandidate]:
+    def _lending_flow_findings(self, path: str, source: str, graph_context: dict) -> list[FindingCandidate]:
         out: list[FindingCandidate] = []
         for fname, _params, _tail, body in iter_function_bodies(source):
             if not (_ORACLE_READ_RE.search(body) and _LIQUIDITY_RE.search(body) and _BORROW_SINK_RE.search(body)):
@@ -178,6 +214,7 @@ class EconomicOracleLendingDetector(Detector):
                     "needs_poc": True,
                     "unprivileged": True,
                     "onchain_detectable": "lead_only",
+                    "protocol_graph": graph_context,
                 },
                 next_tests=[
                     "Fork: skew/stale the oracle value and compare max borrow before/after the update.",
@@ -188,7 +225,7 @@ class EconomicOracleLendingDetector(Detector):
             ))
         return out
 
-    def _erc4626_lending_oracle_findings(self, path: str, source: str, all_text: str) -> list[FindingCandidate]:
+    def _erc4626_lending_oracle_findings(self, path: str, source: str, all_text: str, graph_context: dict) -> list[FindingCandidate]:
         if not (_BORROW_CONTEXT_RE.search(all_text) and _ERC4626_RATE_PRICE_RE.search(source)):
             return []
         out: list[FindingCandidate] = []
@@ -221,6 +258,7 @@ class EconomicOracleLendingDetector(Detector):
                     "needs_poc": True,
                     "unprivileged": True,
                     "onchain_detectable": "lead_only",
+                    "protocol_graph": graph_context,
                 },
                 next_tests=[
                     "Fork: donate/loop the wrapper vault to inflate convertToAssets, then borrow against the wrapped collateral.",

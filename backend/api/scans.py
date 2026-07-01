@@ -1,6 +1,7 @@
 """Scan + dashboard API routes."""
 from __future__ import annotations
 
+import json
 import re
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -8,6 +9,7 @@ from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..config import get_settings
 from ..core import exporter
 from ..core.scanner import manager
 from ..database import get_db
@@ -26,6 +28,16 @@ router = APIRouter(prefix="/api", tags=["scans"])
 
 _ADDR_RE = re.compile(r"0x[0-9a-fA-F]{40}")
 
+
+
+
+def _load_json_file(path) -> dict:
+    try:
+        if path.exists():
+            return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return {}
 
 def _normalize_targets(req: CreateScanRequest) -> list[tuple[str, str]]:
     """Return a deduped list of (checksum_address, label)."""
@@ -202,6 +214,7 @@ def get_scan(scan_id: int, db: Session = Depends(get_db)) -> ScanDetailOut:
     ).all()
     detail = ScanDetailOut.model_validate(scan)
     detail.targets = [TargetOut.model_validate(t) for t in targets]
+    detail.protocol_graph = _load_json_file(get_settings().output_path / str(scan_id) / "protocol_graph.json")
     return detail
 
 

@@ -70,6 +70,8 @@ class TargetContext:
     # Elite Phase 8: shared semantic/taint facts for detectors/reasoners.
     semantic: "ContractFacts | None" = None
     taint: "TaintReport | None" = None
+    # Phase 12: per-target cross-contract role/surface graph.
+    protocol_graph: dict | None = None
 
     # ------------------------------------------------------------------ #
     def all_source_text(self) -> str:

@@ -140,6 +140,54 @@ export interface ToolHealthEntry {
   warning: string | null
 }
 
+
+export interface ProtocolGraphNode {
+  id: string
+  label?: string | null
+  kind?: string | null
+  role?: string | null
+  address?: string | null
+  source?: string | null
+  confidence?: number | null
+}
+
+export interface ProtocolGraphSurface {
+  id: string
+  title?: string | null
+  severity?: string | null
+  confidence?: number | null
+  target_address?: string | null
+  target_label?: string | null
+  next?: string | null
+}
+
+export interface ProtocolGraphCandidate {
+  role?: string | null
+  label?: string | null
+  address?: string | null
+  source?: string | null
+  confidence?: number | null
+  unresolved?: boolean | null
+  already_in_scan?: boolean | null
+}
+
+export interface ProtocolGraphGroup {
+  id?: string | null
+  title?: string | null
+  severity?: string | null
+  members?: ProtocolGraphCandidate[]
+}
+
+export interface ProtocolGraph {
+  schema?: string
+  summary?: Record<string, unknown>
+  nodes?: ProtocolGraphNode[]
+  edges?: Record<string, unknown>[]
+  surfaces?: ProtocolGraphSurface[]
+  groups?: ProtocolGraphGroup[]
+  companion_scan_candidates?: ProtocolGraphCandidate[]
+}
+
 export interface ToolHealth {
   checked_at: string
   tools: ToolHealthEntry[]
@@ -192,10 +240,11 @@ export interface NewScanPayload {
   toggles: Toggles
 }
 
-export type ScanWithTargets = Scan & { targets: Target[] }
+export type ScanWithTargets = Scan & { targets: Target[]; protocol_graph?: ProtocolGraph }
 export type TargetWithDetails = Target & {
   tool_runs: ToolRun[]
   findings: Finding[]
+  protocol_graph?: ProtocolGraph
 }
 export type FindingWithDetails = Finding & {
   ai_review: AIReview | null
