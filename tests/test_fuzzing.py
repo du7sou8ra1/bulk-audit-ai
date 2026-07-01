@@ -105,6 +105,12 @@ def test_generate_foundry_starter_suite_from_abi(tmp_path):
     assert "bulkDeposit(uint256[])" in suite.skipped_functions
     assert "vault/share accounting" in plan_text
     assert "Generated ABI fuzz tests: 2" in plan_text
+    assert Path(suite.fuzzer_artifacts["echidna_harness"]).exists()
+    assert Path(suite.fuzzer_artifacts["echidna_config"]).exists()
+    assert Path(suite.fuzzer_artifacts["medusa_config"]).exists()
+    assert "BulkAuditEchidnaProperties" in Path(suite.fuzzer_artifacts["echidna_harness"]).read_text(encoding="utf-8")
+    assert "--foundry-compile-all" in Path(suite.fuzzer_artifacts["echidna_config"]).read_text(encoding="utf-8")
+    assert "BulkAuditEchidnaProperties" in Path(suite.fuzzer_artifacts["medusa_config"]).read_text(encoding="utf-8")
 
 
 def test_generate_detector_invariant_suite_from_high_signal_findings(tmp_path):
@@ -220,6 +226,8 @@ def test_generate_detector_invariant_suite_from_high_signal_findings(tmp_path):
     assert "Zero-value transfers and empty settlement updates" in plan_text
     assert "honest user assets are conserved" in plan_text
     assert "Elite phase 5" in plan_text
+    assert Path(suite.fuzzer_artifacts["echidna_harness"]).exists()
+    assert "BulkAuditDetectorInvariants" in Path(suite.fuzzer_artifacts["fuzzer_readme"]).read_text(encoding="utf-8")
 
 
 def test_detector_invariant_generation_skips_low_signal_findings(tmp_path):

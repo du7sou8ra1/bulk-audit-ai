@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -256,6 +257,7 @@ class GeneratedSuite:
     stateful_tests: int = 0
     asset_probes: int = 0
     accounting_probes: int = 0
+    fuzzer_artifacts: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -338,6 +340,66 @@ def _recommended_next(surfaces: list[str], has_existing: bool) -> list[str]:
     return out[:8]
 
 
+def _fuzzer_tool_versions() -> dict[str, dict[str, str | bool]]:
+    tools = {
+        "forge": ["forge", "--version"],
+        "echidna": ["echidna", "--version"] if which("echidna") else ["echidna-test", "--version"],
+        "medusa": ["medusa", "--version"],
+    }
+    versions: dict[str, dict[str, str | bool]] = {}
+    for name, args in tools.items():
+        path = which(args[0])
+        if path is None:
+            versions[name] = {"installed": False, "path": "", "version": ""}
+            continue
+        try:
+            proc = subprocess.run(args, capture_output=True, check=False, text=True, timeout=8)
+            output = (proc.stdout or proc.stderr or "").strip()
+            version = "\n".join(output.splitlines()[:3])
+        except Exception as exc:  # pragma: no cover - environment-specific failure.
+            version = f"version check failed: {exc}"
+        versions[name] = {"installed": True, "path": path, "version": version}
+    return versions
+
+
+def _write_fuzzer_starter_artifacts(
+    ctx: TargetContext,
+    project_dir: Path,
+    *,
+    foundry_contract: str,
+    generated_tests: int,
+) -> dict[str, str]:
+    """Emit portable Echidna/Medusa starter files next to a generated Foundry suite."""
+    test_dir = project_dir / "test"
+    corpus_dir = project_dir / "corpus"
+    test_dir.mkdir(parents=True, exist_ok=True)
+    (corpus_dir / "echidna").mkdir(parents=True, exist_ok=True)
+    (corpus_dir / "medusa").mkdir(parents=True, exist_ok=True)
+
+    harness_contract = "BulkAuditEchidnaProperties"
+    harness_path = test_dir / f"{harness_contract}.sol"
+    echidna_config_path = project_dir / "echidna.yaml"
+    medusa_config_path = project_dir / "medusa.json"
+    readme_path = project_dir / "FUZZER_CONFIGS.md"
+
+    harness_path.write_text(
+        _render_echidna_adapter(ctx.address, harness_contract, foundry_contract),
+        encoding="utf-8",
+    )
+    echidna_config_path.write_text(_render_echidna_config(harness_contract), encoding="utf-8")
+    medusa_config_path.write_text(_render_medusa_config(harness_contract), encoding="utf-8")
+    readme_path.write_text(
+        _render_fuzzer_configs_readme(ctx, foundry_contract, harness_contract, generated_tests),
+        encoding="utf-8",
+    )
+    return {
+        "echidna_harness": str(harness_path),
+        "echidna_config": str(echidna_config_path),
+        "medusa_config": str(medusa_config_path),
+        "fuzzer_readme": str(readme_path),
+    }
+
+
 def run_fuzzing(
     ctx: TargetContext,
     *,
@@ -347,6 +409,7 @@ def run_fuzzing(
 ) -> RunnerResult:
     out_dir.mkdir(parents=True, exist_ok=True)
     readiness = inspect_fuzz_readiness(source_dir, ctx.source_files)
+    tool_versions = _fuzzer_tool_versions()
     (out_dir / "fuzz_readiness.json").write_text(
         json.dumps(readiness, indent=2, sort_keys=True),
         encoding="utf-8",
@@ -366,6 +429,7 @@ def run_fuzzing(
         f"fuzz readiness: surfaces={', '.join(readiness['surfaces'])}; "
         f"existing_foundry={existing.status}; existing_echidna={existing_echidna.status}; "
         f"existing_medusa={existing_medusa.status}; generated_foundry={generated.fuzz_tests} fuzz test(s); "
+        f"generated_fuzzers=echidna+medusa; "
         f"path={generated.project_dir}"
     )
     if generated_validation.status not in {"ok", "skipped"}:
@@ -383,9 +447,11 @@ def run_fuzzing(
         findings=[],
         meta={
             "readiness": readiness,
+            "tool_versions": tool_versions,
             "generated_project": str(generated.project_dir),
             "generated_test": str(generated.test_path),
             "generated_plan": str(generated.plan_path),
+            "generated_fuzzer_artifacts": generated.fuzzer_artifacts,
             "generated_fuzz_tests": generated.fuzz_tests,
             "skipped_functions": generated.skipped_functions,
             "existing_foundry": {
@@ -475,6 +541,7 @@ def run_detector_invariant_generation(
         return res
 
     generated = generate_detector_invariant_suite(ctx, selected, out_dir, max_findings=max_findings)
+    tool_versions = _fuzzer_tool_versions()
     validation = _validate_generated_suite(generated.project_dir, out_dir / "validation", timeout=timeout)
     status = "failed" if validation.status == "failed" else "ok"
     summary = (
@@ -483,6 +550,7 @@ def run_detector_invariant_generation(
         f"{generated.asset_probes} asset probe(s) + "
         f"{generated.accounting_probes} accounting probe(s) for "
         f"{len(selected)} high-signal finding(s); validation={validation.status}; "
+        f"generated_fuzzers=echidna+medusa; "
         f"path={generated.project_dir}"
     )
     result = RunnerResult(
@@ -501,11 +569,13 @@ def run_detector_invariant_generation(
             "generated_project": str(generated.project_dir),
             "generated_test": str(generated.test_path),
             "generated_plan": str(generated.plan_path),
+            "generated_fuzzer_artifacts": generated.fuzzer_artifacts,
             "generated_fuzz_tests": generated.fuzz_tests,
             "generated_stateful_tests": generated.stateful_tests,
             "generated_asset_probes": generated.asset_probes,
             "generated_accounting_probes": generated.accounting_probes,
             "elite_phase": 4,
+            "tool_versions": tool_versions,
             "selected_findings": [_candidate_summary(c) for c in selected],
             "templates": generated.surfaces,
             "validation": {
@@ -580,6 +650,12 @@ def generate_detector_invariant_suite(
     )
     plan_path = project_dir / "DETECTOR_INVARIANTS.md"
     plan_path.write_text(_render_detector_invariant_plan(ctx, rows, asset_probes, accounting_probes), encoding="utf-8")
+    fuzzer_artifacts = _write_fuzzer_starter_artifacts(
+        ctx,
+        project_dir,
+        foundry_contract="BulkAuditDetectorInvariants",
+        generated_tests=len(generated) + len(stateful),
+    )
     return GeneratedSuite(
         project_dir=project_dir,
         test_path=test_path,
@@ -590,6 +666,7 @@ def generate_detector_invariant_suite(
         stateful_tests=len(stateful),
         asset_probes=len(asset_probes),
         accounting_probes=len(accounting_probes),
+        fuzzer_artifacts=fuzzer_artifacts,
     )
 
 
@@ -1594,6 +1671,12 @@ def generate_foundry_starter_suite(
     test_path.write_text(_render_foundry_test(ctx.address, generated), encoding="utf-8")
     plan_path = project_dir / "FUZZ_PLAN.md"
     plan_path.write_text(_render_fuzz_plan(ctx, surfaces, generated, skipped), encoding="utf-8")
+    fuzzer_artifacts = _write_fuzzer_starter_artifacts(
+        ctx,
+        project_dir,
+        foundry_contract="BulkAuditGeneratedFuzz",
+        generated_tests=len(generated),
+    )
     return GeneratedSuite(
         project_dir=project_dir,
         test_path=test_path,
@@ -1601,6 +1684,7 @@ def generate_foundry_starter_suite(
         fuzz_tests=len(generated),
         skipped_functions=skipped,
         surfaces=surfaces,
+        fuzzer_artifacts=fuzzer_artifacts,
     )
 
 
@@ -1735,6 +1819,118 @@ contract BulkAuditGeneratedFuzz {{
     }}
 {body}
 }}
+"""
+
+
+def _render_echidna_adapter(address: str, harness_contract: str, foundry_contract: str) -> str:
+    target_literal = _address_literal(address)
+    return f"""// SPDX-License-Identifier: MIT
+// AUTO-GENERATED by BulkAuditAI.
+// Portable Echidna/Medusa adapter for the generated Foundry suite
+// `{foundry_contract}`. Replace the generic raw-call probe with
+// protocol-specific invariants before treating failures as confirmed bugs.
+pragma solidity ^0.8.23;
+
+contract {harness_contract} {{
+    address internal constant TARGET = {target_literal};
+    uint256 public calls;
+    uint256 public successes;
+    bytes32 public lastReturnHash;
+
+    event FuzzerCall(bytes data, bool ok, bytes ret);
+
+    receive() external payable {{}}
+
+    function fuzz_raw_call(bytes calldata data) public {{
+        _call(data);
+    }}
+
+    function fuzz_empty_call() public {{
+        _call("");
+    }}
+
+    function echidna_target_address_is_set() public pure returns (bool) {{
+        return TARGET != address(0);
+    }}
+
+    function echidna_success_counter_is_bounded() public view returns (bool) {{
+        return successes <= calls;
+    }}
+
+    function _call(bytes memory data) internal {{
+        calls++;
+        (bool ok, bytes memory ret) = TARGET.call(data);
+        if (ok) successes++;
+        lastReturnHash = keccak256(ret);
+        emit FuzzerCall(data, ok, ret);
+    }}
+}}
+"""
+
+
+def _render_echidna_config(harness_contract: str) -> str:
+    return f"""# AUTO-GENERATED by BulkAuditAI.
+# Run from this generated project directory:
+#   echidna . --config echidna.yaml
+testMode: property
+testLimit: 250
+seqLen: 32
+shrinkLimit: 250
+corpusDir: corpus/echidna
+cryticArgs:
+  - "--foundry-compile-all"
+"""
+
+
+def _render_medusa_config(harness_contract: str) -> str:
+    return json.dumps(
+        {
+            "compilation": {
+                "platform": "crytic-compile",
+                "platformConfig": {"args": ["--foundry-compile-all"]},
+            },
+            "fuzzing": {
+                "targetContracts": [harness_contract],
+                "testLimit": 250,
+                "workers": 1,
+                "testPrefixes": ["echidna_", "invariant_", "testFuzz_"],
+                "corpusDirectory": "corpus/medusa",
+            },
+        },
+        indent=2,
+        sort_keys=True,
+    ) + "\n"
+
+
+def _render_fuzzer_configs_readme(
+    ctx: TargetContext,
+    foundry_contract: str,
+    harness_contract: str,
+    generated_tests: int,
+) -> str:
+    return f"""# Echidna and Medusa Starter Campaigns
+
+Target: `{ctx.address}`
+Chain: `{ctx.chain}`
+Foundry harness: `{foundry_contract}`
+Echidna/Medusa adapter: `{harness_contract}`
+Generated tests/probes: {generated_tests}
+
+These files are generated scaffolds. They are useful for quickly starting a
+stateful campaign, but a finding is only confirmed after you replace the
+generic raw-call probes with protocol-specific invariants and reproduce a
+real failing assertion.
+
+## Commands
+
+```bash
+forge test --list
+echidna . --config echidna.yaml --contract BulkAuditEchidnaProperties
+medusa fuzz --config medusa.json --no-color
+```
+
+For live-address targets, run against a fork-capable environment and review
+the generated Foundry plan before extending the Echidna/Medusa adapter.
 """
 
 

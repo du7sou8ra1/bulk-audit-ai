@@ -67,7 +67,7 @@ backend/outputs/scans/<scan_id>/<address>/
 | Mythril | Symbolic execution / bytecode fallback | Bounded fast pass; large runtime bytecode fallback is skipped so scans do not stall. |
 | Semgrep | Solidity pattern rules | Used as corroboration, not proof. |
 | Foundry | Read-only fork PoCs and simulations | Never broadcasts; private keys and broadcast commands are blocked. |
-| Fuzzing / invariants | Starter suites and detector-focused invariant harnesses | Generates harnesses/scaffolds; a scaffold is not counted as a passed PoC. |
+| Fuzzing / invariants | Foundry, Echidna, and Medusa starter suites plus detector-focused invariant harnesses | Existing campaigns run when configs exist; generated scaffolds are not counted as passed PoCs. |
 | DeepSeek/OpenAI-compatible model | Triage, invariant hypotheses, adversarial refutation | Uses strict prompts and post-processing guardrails. |
 
 ### Built-in analysis layers
@@ -149,9 +149,10 @@ Install the analyzers with **pipx** (each in its own venv — this avoids the
 | solc-select | `pipx install solc-select` then `solc-select install 0.8.19 && solc-select use 0.8.19` |
 | Mythril | `pipx install mythril` (finicky — OK to skip; app marks it missing) |
 | Foundry | `curl -L https://foundry.paradigm.xyz \| bash && foundryup` |
+| Echidna | Install the binary release from `https://github.com/crytic/echidna` and put it on `PATH`. |
+| Medusa | Install the binary release from `https://github.com/crytic/medusa` and put it on `PATH`. |
 
 After pipx installs, make sure `~/.local/bin` is on your `PATH` (`pipx ensurepath`).
-| Echidna (optional) | see https://github.com/crytic/echidna (binary release) |
 
 ---
 
@@ -339,9 +340,12 @@ controls the cap. The scanner prioritizes higher-impact, corroborated,
 economic, rare, cross-function, and PoC-ready candidates before spending PoC
 budget.
 
-Fuzzing currently generates readiness reports, starter suites, and
-detector-focused invariant harnesses. These are validation scaffolds; they are
-not counted as passed exploits unless a real assertion/test succeeds.
+Fuzzing currently generates readiness reports, Foundry starter suites,
+Echidna property adapters, Medusa starter configs, and detector-focused
+invariant harnesses. If a target repo already contains Foundry/Echidna/Medusa
+configs, BulkAuditAI runs those bounded existing campaigns. Generated harnesses
+are validation scaffolds; they are not counted as passed exploits unless a real
+assertion/test succeeds.
 
 ## Scoring & classification
 
