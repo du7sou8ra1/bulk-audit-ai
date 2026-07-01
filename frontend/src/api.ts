@@ -222,6 +222,7 @@ export interface Settings {
     binding_hard_gate: boolean
     critical_value_gate: boolean
     pattern_priors: boolean
+    companion_expansion: boolean
   }
   limits: Record<string, unknown>
 }
@@ -238,6 +239,8 @@ export interface NewScanPayload {
   addresses_blob: string
   targets: TargetSpec[]
   toggles: Toggles
+  companion_expansion: boolean
+  companion_expansion_max: number
 }
 
 export type ScanWithTargets = Scan & { targets: Target[]; protocol_graph?: ProtocolGraph }

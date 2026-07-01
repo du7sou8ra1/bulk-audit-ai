@@ -5,6 +5,7 @@ from backend.core.protocol_graph import (
     build_protocol_graph,
     build_scan_protocol_graph,
     run_protocol_graph,
+    select_companion_scan_targets,
 )
 from backend.core.semantic_index import build_semantic_index
 from backend.detectors.base import TargetContext
@@ -97,6 +98,33 @@ def test_scan_protocol_graph_merge_marks_already_scanned_candidate(tmp_path):
     assert merged["summary"]["target_graph_count"] == 2
     assert merged["summary"]["surface_count"] >= 1
     assert any(c.get("already_in_scan") for c in merged["companion_scan_candidates"])
+
+
+def test_select_companion_scan_targets_filters_noise_and_prioritizes_roles(tmp_path):
+    scan_graph = {
+        "schema": "bulk-audit-scan-protocol-graph/v1",
+        "companion_scan_candidates": [
+            {"role": "asset", "label": "usdc", "address": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "unresolved": False},
+            {"role": "lending_controller", "label": "comptroller", "address": "0xcccccccccccccccccccccccccccccccccccccccc", "unresolved": False},
+            {"role": "oracle", "label": "priceOracle", "address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "unresolved": False, "confidence": 0.5},
+            {"role": "verifier", "label": "verifier", "unresolved": True},
+            {"role": "amm_pair", "label": "pair", "address": "0xdddddddddddddddddddddddddddddddddddddddd", "unresolved": False, "confidence": 0.9},
+            {"role": "strategy", "label": "strategy", "address": "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "unresolved": False},
+        ],
+    }
+    (tmp_path / "protocol_graph.json").write_text(json.dumps(scan_graph), encoding="utf-8")
+
+    selected = select_companion_scan_targets(
+        tmp_path,
+        existing_addresses={"0xcccccccccccccccccccccccccccccccccccccccc"},
+        max_new=2,
+    )
+
+    assert [row["role"] for row in selected] == ["oracle", "amm_pair"]
+    assert [row["address"].lower() for row in selected] == [
+        "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "0xdddddddddddddddddddddddddddddddddddddddd",
+    ]
 
 
 def test_economic_detector_evidence_includes_protocol_graph_context():

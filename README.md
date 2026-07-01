@@ -79,7 +79,7 @@ backend/outputs/scans/<scan_id>/<address>/
 - 2020-2026 exploit detectors: bridge replay/domain binding, settlement-boundary mismatch, zero-value transfer reward stacking, ERC777 hook accounting, read-only reserve reentrancy, unsafe mint math, CLMM tick boundary rounding, lending donation exchange-rate manipulation, economic oracle/lending bad-debt coupling, AMM pair burn/sync reserve desync, ERC-4626 dual-asset redeem double-counting, verifier spoofing, upgrade/admin blast radius, and more.
 - Weird-hunt detector pack: actual-received accounting, Merkle leaf binding, bitmap claim collision, bridge replay keys, address aliasing, oracle freshness/sequencer, TWAP cardinality, forced ETH accounting, CREATE2/metamorphic trust, try/catch finalization, reward-debt order, zero-supply accumulators, position split/merge, governance snapshot bypass, pause bypass, multicall state cache, WAD/RAY unit mismatch, duplicate batch items, and semantic taint value-flow leads.
 - Semantic index: shared Solidity facts for params, modifiers, guards, reads/writes, calls, decoded fields, events, mappings, external calls, and value sinks.
-- Protocol graph: cross-contract role graph that groups target, implementation/admin, oracle, lending controller, cToken/market, ERC-4626 wrapper, AMM pair, router, bridge, verifier, assets, and strategies; safe address getters become companion scan candidates.
+- Protocol graph: cross-contract role graph that groups target, implementation/admin, oracle, lending controller, cToken/market, ERC-4626 wrapper, AMM pair, router, bridge, verifier, assets, and strategies; safe address getters become companion scan candidates, and optional companion expansion can enqueue resolved high-value dependencies in the same scan.
 - Taint/dataflow core: caller/calldata/proof/oracle sources into value-transfer, delegatecall, upgrade, replay-marker, and accounting-write sinks, including simple external -> internal helper paths.
 - Invariant reasoner: LLM-assisted cross-function hypotheses over value-moving entrypoints.
 - Adversarial refuter: independent review pass that tries to disprove each candidate before final scoring.
@@ -185,6 +185,9 @@ ENABLE_REFUTER_PRECISION_RULES=true
 ENABLE_BINDING_HARD_GATE=true
 ENABLE_CRITICAL_VALUE_GATE=true
 ENABLE_PATTERN_PRIORS=true
+ENABLE_COMPANION_EXPANSION=false  # opt-in; ultra-deep-v2 UI enables it by default
+COMPANION_EXPANSION_MAX_TARGETS=8
+COMPANION_EXPANSION_HARD_CAP=25
 REFUTATION_MODE=hard              # hard|soft
 MAX_HYPOTHESES_PER_TARGET=8
 MAX_POCS_PER_TARGET=3
@@ -331,8 +334,9 @@ classes and precision layers.
 
 The New Scan page can enable/disable: Slither, Mythril, Semgrep, Foundry, fuzzing,
 bytecode intel, bytecode probes, DeepSeek review, invariant reasoner, refutation,
-flashloan simulations, value-context, sanity liveness, binding hard gate, and
-pattern priors. Server defaults are shown on the Settings page.
+flashloan simulations, value-context, sanity liveness, binding hard gate, pattern
+priors, and protocol companion expansion. Server defaults are shown on the
+Settings page.
 
 ### Auto-PoC and fuzzing
 
@@ -447,9 +451,16 @@ pair, writes `protocol_graph.json`, exposes a visible `protocol-graph` tool run,
 shows graph summaries in the UI, and feeds graph context into the
 `economic_oracle_lending` detector.
 
+Elite Phase 13 is implemented: protocol companion expansion can automatically
+enqueue resolved high-value dependencies from the graph in the same scan. It is
+opt-in from API/env, enabled by default when selecting `ultra-deep-v2` in the UI,
+limited by per-scan and hard caps, deduped against existing targets, and excludes
+generic asset tokens so the auditor focuses on exploit-relevant components.
+
 Recommended next improvements:
 
-1. Add automatic companion expansion with scope controls: when the graph resolves an oracle, Comptroller, cToken, vault wrapper, or AMM pair address, offer to enqueue those addresses in the same scan.
-2. Add storage-layout hints for cross-contract bugs and proxy/module scans before AI review.
-3. Add a CI command that runs the exploited-contract detector regression pack on
+1. Add storage-layout hints for cross-contract bugs and proxy/module scans before AI review.
+2. Add a CI command that runs the exploited-contract detector regression pack on
    every deploy and blocks promotion when an expected detector/rule is missing.
+3. Add graph-aware fork simulations that run one scenario across target + oracle
+   + vault/market/pair instead of only one contract at a time.

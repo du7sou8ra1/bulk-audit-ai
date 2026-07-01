@@ -212,26 +212,56 @@ async def run_scan_pipeline(scan_id: int, mgr: ScanManager) -> None:
                 _set_target_status(scan_id, tid, TargetStatus.FAILED, error=str(exc)[:2000])
                 _log(scan_id, f"target {tid} failed: {exc}")
 
-    await asyncio.gather(*(process(tid) for tid in target_ids))
+    processed: set[int] = set()
+    pending = list(target_ids)
+    while pending:
+        current = [tid for tid in pending if tid not in processed]
+        if not current:
+            break
+        await asyncio.gather(*(process(tid) for tid in current))
+        processed.update(current)
 
-    # Phase 12: merge per-target protocol graphs into a scan-level view.
-    try:
-        scan_graph = await asyncio.to_thread(
-            protocol_graph_mod.write_scan_protocol_graph,
+        # Phase 12: merge per-target protocol graphs into a scan-level view.
+        try:
+            scan_graph = await asyncio.to_thread(
+                protocol_graph_mod.write_scan_protocol_graph,
+                scan_id,
+                get_settings().output_path / str(scan_id),
+            )
+            summary = scan_graph.get("summary") or {}
+            _log(
+                scan_id,
+                "protocol graph: "
+                f"{summary.get('target_graph_count', 0)} target graph(s), "
+                f"{summary.get('surface_count', 0)} surface(s), "
+                f"{summary.get('companion_candidate_count', 0)} companion candidate(s)",
+            )
+            hub.publish(scan_id, {"type": "scan_update", "protocol_graph": scan_graph})
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("scan protocol graph merge failed for %s: %s", scan_id, exc)
+
+        if mgr.is_cancelled(scan_id):
+            break
+
+        added = await asyncio.to_thread(_add_companion_targets, scan_id, chain, toggles)
+        if not added:
+            break
+        pending = [int(row["target_id"]) for row in added]
+        labels = ", ".join(f"{row['role']}:{row['address'][:10]}..." for row in added[:6])
+        suffix = "" if len(added) <= 6 else f", +{len(added) - 6} more"
+        _log(scan_id, f"companion expansion: queued {len(added)} protocol companion(s): {labels}{suffix}")
+        with SessionLocal() as db:
+            scan = db.get(Scan, scan_id)
+            total_targets = scan.total_targets if scan else None
+        hub.publish(
             scan_id,
-            get_settings().output_path / str(scan_id),
+            {
+                "type": "scan_update",
+                "status": "running",
+                "total_targets": total_targets,
+                "companion_expansion": added,
+            },
         )
-        summary = scan_graph.get("summary") or {}
-        _log(
-            scan_id,
-            "protocol graph: "
-            f"{summary.get('target_graph_count', 0)} target graph(s), "
-            f"{summary.get('surface_count', 0)} surface(s), "
-            f"{summary.get('companion_candidate_count', 0)} companion candidate(s)",
-        )
-        hub.publish(scan_id, {"type": "scan_update", "protocol_graph": scan_graph})
-    except Exception as exc:  # pragma: no cover - defensive
-        logger.warning("scan protocol graph merge failed for %s: %s", scan_id, exc)
 
     # Finalize.
     with SessionLocal() as db:
@@ -896,6 +926,89 @@ async def process_target(
                 "critical": scan.critical_count,
             }
     hub.publish(scan_id, {"type": "progress", **progress})
+
+
+def _add_companion_targets(
+    scan_id: int,
+    chain: str,
+    toggles: dict,
+    *,
+    scan_dir: Path | None = None,
+) -> list[dict]:
+    s = get_settings()
+    if not _toggle(toggles, "companion_expansion", s.enable_companion_expansion):
+        return []
+    cap = _companion_expansion_cap(toggles, s)
+    if cap <= 0:
+        return []
+
+    graph_dir = scan_dir or (s.output_path / str(scan_id))
+    with SessionLocal() as db:
+        scan = db.get(Scan, scan_id)
+        if not scan:
+            return []
+        targets = list(db.scalars(select(Target).where(Target.scan_id == scan_id)).all())
+        existing = {str(t.address).lower() for t in targets if t.address}
+        auto_existing = sum(1 for t in targets if _is_companion_target_label(t.label))
+        remaining = max(0, cap - auto_existing)
+        if remaining <= 0:
+            return []
+
+        candidates = protocol_graph_mod.select_companion_scan_targets(
+            graph_dir,
+            existing_addresses=existing,
+            max_new=remaining,
+        )
+        added: list[dict] = []
+        for candidate in candidates:
+            raw_address = str(candidate.get("address") or "")
+            try:
+                address = OnchainClient.checksum(raw_address)
+            except Exception:
+                address = raw_address
+            addr_low = address.lower()
+            if addr_low in existing:
+                continue
+            role = str(candidate.get("role") or "component")
+            label = _companion_target_label(candidate)
+            target = Target(scan_id=scan_id, address=address, chain=chain, label=label)
+            db.add(target)
+            db.flush()
+            existing.add(addr_low)
+            added.append({
+                "target_id": target.id,
+                "address": address,
+                "role": role,
+                "label": label,
+                "source": candidate.get("source"),
+                "observed_from": candidate.get("observed_from") or [],
+            })
+        if added:
+            scan.total_targets = len(targets) + len(added)
+            db.commit()
+        return added
+
+
+def _companion_expansion_cap(toggles: dict, settings=None) -> int:
+    s = settings or get_settings()
+    hard_cap = max(0, int(s.companion_expansion_hard_cap))
+    default = int(s.companion_expansion_max_targets)
+    raw = toggles.get("companion_expansion_max")
+    try:
+        requested = default if raw in (None, "") else int(raw)
+    except Exception:
+        requested = default
+    return max(0, min(requested, hard_cap))
+
+
+def _companion_target_label(candidate: dict) -> str:
+    role = re.sub(r"[^A-Za-z0-9_.-]", "_", str(candidate.get("role") or "component"))[:48]
+    label = re.sub(r"[^A-Za-z0-9_.-]", "_", str(candidate.get("label") or role))[:96]
+    return f"graph:{role}:{label}"[:255]
+
+
+def _is_companion_target_label(label: str | None) -> bool:
+    return str(label or "").startswith("graph:")
 
 
 def _count_done(db, scan_id: int) -> int:

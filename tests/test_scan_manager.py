@@ -4,6 +4,7 @@ running loop) must schedule onto the captured main loop, not raise
 Run: PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest tests/test_scan_manager.py -q
 """
 import asyncio
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -11,7 +12,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 
 from backend.api import scans as scan_api
-from backend.core.scanner import _candidate_priority, _finding_slug, _taint_summary, manager
+from backend.core.scanner import _add_companion_targets, _candidate_priority, _finding_slug, _taint_summary, manager
 from backend.database import SessionLocal, init_db
 from backend.detectors.base import FindingCandidate
 from backend.models import Scan, ScanStatus, Target
@@ -195,3 +196,69 @@ def test_rescan_rejects_non_failed_or_cancelled_scan(monkeypatch):
         finally:
             db.delete(db.get(Scan, scan.id))
             db.commit()
+
+
+def test_add_companion_targets_adds_resolved_high_value_contracts_and_obeys_cap(tmp_path):
+    init_db()
+    scan_id = None
+    with SessionLocal() as db:
+        scan = Scan(
+            name="graph expansion",
+            chain="ethereum",
+            scan_profile="ultra-deep-v2",
+            toggles={"companion_expansion": True, "companion_expansion_max": 2},
+            total_targets=1,
+            status=ScanStatus.QUEUED,
+        )
+        db.add(scan)
+        db.commit()
+        db.refresh(scan)
+        scan_id = scan.id
+        db.add(Target(
+            scan_id=scan_id,
+            address="0x1111111111111111111111111111111111111111",
+            chain="ethereum",
+            label="seed",
+        ))
+        db.commit()
+
+    graph = {
+        "schema": "bulk-audit-scan-protocol-graph/v1",
+        "companion_scan_candidates": [
+            {"role": "oracle", "label": "oracle", "address": "0x2222222222222222222222222222222222222222", "unresolved": False},
+            {"role": "erc4626_vault", "label": "vault", "address": "0x3333333333333333333333333333333333333333", "unresolved": False},
+            {"role": "amm_pair", "label": "pair", "address": "0x4444444444444444444444444444444444444444", "unresolved": False},
+            {"role": "asset", "label": "usdc", "address": "0x5555555555555555555555555555555555555555", "unresolved": False},
+            {"role": "verifier", "label": "verifier", "unresolved": True},
+        ],
+    }
+    (tmp_path / "protocol_graph.json").write_text(json.dumps(graph), encoding="utf-8")
+
+    try:
+        added = _add_companion_targets(
+            scan_id,
+            "ethereum",
+            {"companion_expansion": True, "companion_expansion_max": 2},
+            scan_dir=tmp_path,
+        )
+        assert [row["role"] for row in added] == ["oracle", "erc4626_vault"]
+        assert _add_companion_targets(
+            scan_id,
+            "ethereum",
+            {"companion_expansion": True, "companion_expansion_max": 2},
+            scan_dir=tmp_path,
+        ) == []
+
+        with SessionLocal() as db:
+            scan = db.get(Scan, scan_id)
+            targets = db.scalars(select(Target).where(Target.scan_id == scan_id).order_by(Target.id)).all()
+            assert scan.total_targets == 3
+            assert len(targets) == 3
+            assert [t.label for t in targets[1:]] == ["graph:oracle:oracle", "graph:erc4626_vault:vault"]
+    finally:
+        if scan_id is not None:
+            with SessionLocal() as db:
+                scan = db.get(Scan, scan_id)
+                if scan:
+                    db.delete(scan)
+                    db.commit()

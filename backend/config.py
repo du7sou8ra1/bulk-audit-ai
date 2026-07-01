@@ -64,6 +64,9 @@ class Settings(BaseSettings):
     enable_binding_hard_gate: bool = Field(default=True, alias="ENABLE_BINDING_HARD_GATE")
     enable_critical_value_gate: bool = Field(default=True, alias="ENABLE_CRITICAL_VALUE_GATE")
     enable_pattern_priors: bool = Field(default=True, alias="ENABLE_PATTERN_PRIORS")
+    enable_companion_expansion: bool = Field(default=False, alias="ENABLE_COMPANION_EXPANSION")
+    companion_expansion_max_targets: int = Field(default=8, alias="COMPANION_EXPANSION_MAX_TARGETS")
+    companion_expansion_hard_cap: int = Field(default=25, alias="COMPANION_EXPANSION_HARD_CAP")
     max_hypotheses_per_target: int = Field(default=8, alias="MAX_HYPOTHESES_PER_TARGET")
     max_pocs_per_target: int = Field(default=3, alias="MAX_POCS_PER_TARGET")
     refutation_mode: str = Field(default="hard", alias="REFUTATION_MODE")
@@ -187,6 +190,7 @@ def masked_settings() -> dict:
             "binding_hard_gate": s.enable_binding_hard_gate,
             "critical_value_gate": s.enable_critical_value_gate,
             "pattern_priors": s.enable_pattern_priors,
+            "companion_expansion": s.enable_companion_expansion,
         },
         "limits": {
             "max_parallel_scans": s.max_parallel_scans,
@@ -194,6 +198,8 @@ def masked_settings() -> dict:
             "max_hypotheses_per_target": s.max_hypotheses_per_target,
             "max_pocs_per_target": s.max_pocs_per_target,
             "max_sims_per_target": s.max_sims_per_target,
+            "companion_expansion_max_targets": s.companion_expansion_max_targets,
+            "companion_expansion_hard_cap": s.companion_expansion_hard_cap,
             "mythril_timeout": s.mythril_timeout,
             "slither_timeout": s.slither_timeout,
             "semgrep_timeout": s.semgrep_timeout,

@@ -49,6 +49,18 @@ _HIGH_VALUE_ROLES = {
     "strategy",
 }
 
+_EXPANSION_ROLE_PRIORITY = {
+    "oracle": 0,
+    "lending_controller": 1,
+    "lending_market": 2,
+    "erc4626_vault": 3,
+    "amm_pair": 4,
+    "router": 5,
+    "bridge_messenger": 6,
+    "verifier": 7,
+    "strategy": 8,
+}
+
 _TYPED_CALL_RE = re.compile(r"\b(?P<target>[A-Za-z_]\w*)\s*\.\s*(?P<method>[A-Za-z_]\w*)\s*\(")
 _ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
 _SKIP_TARGETS = {"msg", "tx", "block", "super", "this", "address", "abi", "type", "console", "assert", "require"}
@@ -315,6 +327,89 @@ def write_scan_protocol_graph(scan_id: int, scan_dir: Path) -> dict[str, Any]:
     path = scan_dir / "protocol_graph.json"
     path.write_text(json.dumps(graph, indent=2, sort_keys=True, default=str), encoding="utf-8")
     return graph
+
+
+def select_companion_scan_targets(
+    scan_dir: Path,
+    *,
+    existing_addresses: set[str],
+    max_new: int,
+    roles: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Return resolved, high-value companion contracts worth auto-scanning.
+
+    This intentionally refuses unresolved guesses and generic assets. The point
+    is to follow exploit-critical dependencies such as oracle/controller/vault/
+    AMM/verifier contracts without turning one audit into a token-list crawl.
+    """
+    if max_new <= 0:
+        return []
+    allowed_roles = set(roles or _HIGH_VALUE_ROLES)
+    existing = {str(a).lower() for a in (existing_addresses or set()) if a}
+    seen: set[str] = set()
+    selected: list[dict[str, Any]] = []
+
+    def observe(candidate: dict[str, Any], observed_from: list[str] | None = None) -> None:
+        role = str(candidate.get("role") or "")
+        if role not in allowed_roles:
+            return
+        if candidate.get("unresolved"):
+            return
+        address = candidate.get("address")
+        if not _valid_address(address):
+            return
+        addr_low = str(address).lower()
+        if addr_low in existing or addr_low in seen:
+            return
+        seen.add(addr_low)
+        selected.append({
+            "address": str(address),
+            "role": role,
+            "label": candidate.get("label") or role,
+            "source": candidate.get("source") or "protocol_graph",
+            "confidence": candidate.get("confidence"),
+            "observed_from": list(observed_from or candidate.get("observed_from") or []),
+        })
+
+    scan_graph_path = scan_dir / "protocol_graph.json"
+    loaded_scan_graph = False
+    if scan_graph_path.exists():
+        try:
+            graph = json.loads(scan_graph_path.read_text(encoding="utf-8"))
+            loaded_scan_graph = graph.get("schema") == "bulk-audit-scan-protocol-graph/v1"
+        except Exception:
+            graph = {}
+        if loaded_scan_graph:
+            for candidate in graph.get("companion_scan_candidates") or []:
+                observe(candidate, candidate.get("observed_from") or [])
+
+    if not loaded_scan_graph and scan_dir.exists():
+        for path in sorted(scan_dir.glob("0x*/protocol_graph.json")):
+            try:
+                graph = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            target = graph.get("target") or {}
+            observed_from = [str(target.get("address") or path.parent.name)]
+            for candidate in graph.get("companion_scan_candidates") or []:
+                observe(candidate, observed_from)
+
+    selected.sort(key=_companion_priority_key)
+    return selected[:max_new]
+
+
+def _companion_priority_key(row: dict[str, Any]) -> tuple[int, float, str, str]:
+    role = str(row.get("role") or "")
+    try:
+        confidence = float(row.get("confidence") or 0.0)
+    except Exception:
+        confidence = 0.0
+    return (
+        _EXPANSION_ROLE_PRIORITY.get(role, 99),
+        -confidence,
+        str(row.get("label") or ""),
+        str(row.get("address") or "").lower(),
+    )
 
 
 def render_protocol_graph_markdown(graph: dict[str, Any]) -> str:

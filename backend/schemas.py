@@ -50,6 +50,8 @@ class CreateScanRequest(BaseModel):
     targets: list[TargetInput] = Field(default_factory=list)
     addresses_blob: str = ""
     toggles: ScanToggles = Field(default_factory=ScanToggles)
+    companion_expansion: bool = False
+    companion_expansion_max: int = Field(default=8, ge=0, le=25)
 
     @field_validator("scan_profile")
     @classmethod

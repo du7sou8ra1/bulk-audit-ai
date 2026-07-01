@@ -72,6 +72,12 @@ def _normalize_targets(req: CreateScanRequest) -> list[tuple[str, str]]:
     return list(seen.items())
 
 
+def _scan_toggles_with_companion_controls(req: CreateScanRequest) -> dict:
+    toggles = req.toggles.model_dump(exclude_none=True)
+    toggles["companion_expansion"] = bool(req.companion_expansion)
+    toggles["companion_expansion_max"] = int(req.companion_expansion_max or 0)
+    return toggles
+
 def _create_scan_record(
     db: Session,
     *,
@@ -162,7 +168,7 @@ def create_scan(req: CreateScanRequest, db: Session = Depends(get_db)) -> ScanOu
         name=req.name or f"scan {len(targets)} targets",
         chain=req.chain,
         scan_profile=req.scan_profile,
-        toggles=req.toggles.model_dump(exclude_none=True),
+        toggles=_scan_toggles_with_companion_controls(req),
         targets=targets,
     )
 

@@ -98,10 +98,13 @@ export default function NewScan() {
     binding_hard_gate: true,
     pattern_priors: true,
   })
+  const [companionExpansion, setCompanionExpansion] = useState(false)
+  const [companionExpansionMax, setCompanionExpansionMax] = useState(8)
 
   useEffect(() => {
     if (profile === 'ultra-deep-v2') {
       setToggles((t) => (t.fuzzing ? t : { ...t, fuzzing: true }))
+      setCompanionExpansion(true)
     }
   }, [profile])
 
@@ -131,6 +134,8 @@ export default function NewScan() {
         addresses_blob: blob,
         targets,
         toggles,
+        companion_expansion: companionExpansion,
+        companion_expansion_max: companionExpansionMax,
       })
       navigate(`/scans/${scan.id}`)
     } catch (e) {
@@ -199,6 +204,39 @@ export default function NewScan() {
                 </option>
               ))}
             </select>
+          </div>
+
+          <div>
+            <label className="label">Protocol expansion</label>
+            <div className="card p-3 space-y-3">
+              <label className="flex cursor-pointer items-start gap-3">
+                <input
+                  type="checkbox"
+                  className="mt-1 h-4 w-4 rounded border-slate-600 bg-slate-900 text-emerald-500 focus:ring-emerald-600/50"
+                  checked={companionExpansion}
+                  onChange={() => setCompanionExpansion((v) => !v)}
+                />
+                <span className="flex-1">
+                  <span className="text-sm text-slate-200">Auto-scan companions</span>
+                  <span className="block text-xs text-slate-500">
+                    Resolved oracle, market, vault, AMM, bridge, verifier, and strategy contracts.
+                  </span>
+                </span>
+              </label>
+              <div className="grid grid-cols-[1fr_104px] items-center gap-3">
+                <span className="text-xs uppercase tracking-wide text-slate-500">Max additions</span>
+                <select
+                  className="input h-9 py-1 text-sm"
+                  value={companionExpansionMax}
+                  disabled={!companionExpansion}
+                  onChange={(e) => setCompanionExpansionMax(Number(e.target.value))}
+                >
+                  {[3, 6, 8, 12, 16, 25].map((n) => (
+                    <option key={n} value={n}>{n}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
           </div>
 
           <div>
