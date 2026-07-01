@@ -126,7 +126,7 @@ export default function Settings() {
             <ToggleRow label="Mythril" on={data.toggles.mythril} />
             <ToggleRow label="Semgrep" on={data.toggles.semgrep} />
             <ToggleRow label="Foundry" on={data.toggles.foundry} />
-            <ToggleRow label="Fuzzing" on={data.toggles.fuzzing} />
+            <ToggleRow label="Fuzzing (Foundry, Echidna, Medusa)" on={data.toggles.fuzzing} />
             <ToggleRow label="Bytecode intel" on={data.toggles.bytecode_intel} />
             <ToggleRow label="Bytecode probes" on={data.toggles.bytecode_probes} />
             <ToggleRow label="Invariant reasoner" on={data.toggles.invariant_reasoner} />

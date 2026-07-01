@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { api, type ScanProfile, type Toggles } from '../api'
+import { api, type ScanProfile, type Toggles, type ToolHealthEntry } from '../api'
 import { PageHeader, ErrorBox } from '../components/ui'
 import AddressInputBox, { parseAddresses } from '../components/AddressInputBox'
 
@@ -29,7 +29,7 @@ const TOOL_DEFS: { key: keyof Toggles; label: string; hint: string }[] = [
   { key: 'bytecode_intel', label: 'Bytecode intel', hint: 'Selectors + opcode risk signals' },
   { key: 'bytecode_probes', label: 'Bytecode probes', hint: 'Selector-specific fork probe plan' },
   { key: 'foundry', label: 'Foundry simulations', hint: 'On-chain forks' },
-  { key: 'fuzzing', label: 'Fuzzing', hint: 'Readiness + Foundry suite' },
+  { key: 'fuzzing', label: 'Fuzzing', hint: 'Foundry + Echidna + Medusa handoff' },
   { key: 'flashloan_sim', label: 'Flashloan sims', hint: 'Oracle/donation fork checks' },
   { key: 'invariant_reasoner', label: 'Invariant reasoner', hint: 'Cross-function hypotheses' },
   { key: 'refutation', label: 'Refuter', hint: 'Adversarial finding review' },
@@ -40,12 +40,15 @@ const TOOL_DEFS: { key: keyof Toggles; label: string; hint: string }[] = [
   { key: 'deepseek', label: 'DeepSeek AI review', hint: 'LLM triage' },
 ]
 
+const FUZZER_TOOLS = ['forge', 'echidna', 'medusa'] as const
+
 export default function NewScan() {
   const navigate = useNavigate()
   const [name, setName] = useState('')
   const [chain, setChain] = useState('ethereum')
   const [profile, setProfile] = useState('deep')
   const [profiles, setProfiles] = useState<ScanProfile[]>(FALLBACK_PROFILES)
+  const [toolHealth, setToolHealth] = useState<ToolHealthEntry[]>([])
 
   useEffect(() => {
     let active = true
@@ -61,6 +64,22 @@ export default function NewScan() {
       active = false
     }
   }, [])
+
+  useEffect(() => {
+    let active = true
+    api
+      .getToolHealth()
+      .then((r) => {
+        if (active) setToolHealth(r.tools || [])
+      })
+      .catch(() => {
+        /* tool health is optional for the scan form */
+      })
+    return () => {
+      active = false
+    }
+  }, [])
+
   const [blob, setBlob] = useState('')
   const [toggles, setToggles] = useState<Record<keyof Toggles, boolean>>({
     slither: true,
@@ -79,6 +98,13 @@ export default function NewScan() {
     binding_hard_gate: true,
     pattern_priors: true,
   })
+
+  useEffect(() => {
+    if (profile === 'ultra-deep-v2') {
+      setToggles((t) => (t.fuzzing ? t : { ...t, fuzzing: true }))
+    }
+  }, [profile])
+
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -87,6 +113,10 @@ export default function NewScan() {
 
   function toggle(key: keyof Toggles) {
     setToggles((t) => ({ ...t, [key]: !t[key] }))
+  }
+
+  function healthFor(name: string) {
+    return toolHealth.find((tool) => tool.name.toLowerCase() === name)
   }
 
   async function submit() {
@@ -190,6 +220,34 @@ export default function NewScan() {
                     <span className="block text-xs text-slate-500">
                       {tool.hint}
                     </span>
+                    {tool.key === 'fuzzing' && (
+                      <span className="mt-2 flex flex-wrap gap-1.5">
+                        {FUZZER_TOOLS.map((name) => {
+                          const health = healthFor(name)
+                          const installed = health?.installed
+                          return (
+                            <span
+                              key={name}
+                              className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] uppercase ${
+                                installed
+                                  ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+                                  : health
+                                    ? 'border-amber-500/30 bg-amber-500/10 text-amber-300'
+                                    : 'border-slate-700 bg-slate-900/60 text-slate-500'
+                              }`}
+                              title={health?.version || health?.warning || 'checking'}
+                            >
+                              <span
+                                className={`h-1.5 w-1.5 rounded-full ${
+                                  installed ? 'bg-emerald-400' : health ? 'bg-amber-400' : 'bg-slate-600'
+                                }`}
+                              />
+                              {name}
+                            </span>
+                          )
+                        })}
+                      </span>
+                    )}
                   </span>
                 </label>
               ))}
