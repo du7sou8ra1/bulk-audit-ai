@@ -231,6 +231,57 @@ def _cli_benchmark_exploits(
     return 0 if report.passed else 1
 
 
+def _cli_benchmark_detectors(
+    *,
+    case_ids: list[str],
+    profile: str,
+    list_cases: bool,
+    out: str | None,
+) -> int:
+    from dataclasses import asdict
+
+    from .core import exploit_benchmark
+
+    if list_cases:
+        print(json.dumps({"cases": exploit_benchmark.list_detector_regression_cases()}, indent=2, sort_keys=True))
+        return 0
+
+    try:
+        cases = exploit_benchmark.select_detector_regression_cases(case_ids)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    results = exploit_benchmark.run_detector_regression_cases(cases, profile=profile)
+    passed_cases = sum(1 for result in results if result.passed)
+    report = {
+        "suite": "detector-fixture-regression",
+        "profile": profile,
+        "passed": passed_cases == len(results),
+        "total_cases": len(results),
+        "passed_cases": passed_cases,
+        "failed_cases": len(results) - passed_cases,
+        "results": [asdict(result) for result in results],
+    }
+    if out:
+        out_path = Path(out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+        print(f"wrote {out_path}")
+
+    print(f"detector benchmark {passed_cases}/{len(results)} passed, profile={profile}")
+    for result in results:
+        status = "PASS" if result.passed else "FAIL"
+        print(f"- {status} {result.case_id}: detectors={', '.join(result.present_detectors) or 'none'}")
+        for missing in result.missing_detectors:
+            print(f"  * missing detector: {missing}")
+        for missing in result.missing_rule_ids:
+            print(f"  * missing rule: {missing}")
+        for error in result.detector_errors[:4]:
+            print(f"  * detector error: {error}")
+    return 0 if report["passed"] else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="bulk-audit-ai")
     sub = parser.add_subparsers(dest="command")
@@ -260,6 +311,12 @@ def main(argv: list[str] | None = None) -> int:
     p_bench.add_argument("--list-cases", action="store_true", help="print benchmark case pack as JSON")
     p_bench.add_argument("--out", default=None, help="write JSON benchmark report")
 
+    p_det = sub.add_parser("benchmark-detectors", help="run deterministic detector fixture regression benchmark")
+    p_det.add_argument("--case", action="append", default=[], help="detector regression case id; repeatable")
+    p_det.add_argument("--profile", default="ultra-deep-v2")
+    p_det.add_argument("--list-cases", action="store_true", help="print detector fixture case pack as JSON")
+    p_det.add_argument("--out", default=None, help="write JSON detector regression report")
+
     sub.add_parser("serve", help="run the web server (default)")
 
     args = parser.parse_args(argv)
@@ -279,6 +336,13 @@ def main(argv: list[str] | None = None) -> int:
             case_ids=args.case,
             profile=args.profile,
             run=args.run,
+            list_cases=args.list_cases,
+            out=args.out,
+        )
+    if args.command == "benchmark-detectors":
+        return _cli_benchmark_detectors(
+            case_ids=args.case,
+            profile=args.profile,
             list_cases=args.list_cases,
             out=args.out,
         )

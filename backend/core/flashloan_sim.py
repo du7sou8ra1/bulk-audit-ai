@@ -210,26 +210,65 @@ _GRAPH_SIM_ROLES = {
 }
 
 _GRAPH_PROTOCOL_PROBE = """// SPDX-License-Identifier: MIT
-// AUTO-GENERATED GRAPH-AWARE FORK CONTEXT PROBE - local fork only. DO NOT BROADCAST.
-// It validates that the resolved protocol-group addresses have code and records
-// the scenario plan. It is NOT exploit proof by itself.
+// AUTO-GENERATED GRAPH-AWARE FORK ASSERTION PROBE - local fork only. DO NOT BROADCAST.
+// Family-specific tests are safe, read-mostly fork assertions. Some tests use
+// vm.store to simulate an unprivileged token donation on the local fork only.
 pragma solidity ^0.8.19;
 
+interface Vm { function load(address,bytes32) external view returns (bytes32); function store(address,bytes32,bytes32) external; }
+interface IERC20Lite { function balanceOf(address) external view returns (uint256); }
+
 contract GraphProtocolProbe {
+    Vm constant vm = Vm(__CHEAT__);
     address constant TARGET = __TARGET__;
-__COMPONENT_CONSTANTS__
+__ROLE_CONSTANTS__
 
     function test_protocol_components_have_code() external view {
         require(TARGET.code.length > 0, "target has no code on fork");
 __COMPONENT_ASSERTS__
     }
 
-    function test_attack_scenario_plan_is_bound() external pure {
-        bytes32 scenario = keccak256(bytes("__SCENARIO__"));
-        require(scenario != bytes32(0), "empty scenario");
+__FAMILY_TESTS__
+
+    function _callAddress(address target, bytes memory data) internal view returns (bool ok, address value) {
+        if (target == address(0) || target.code.length == 0) return (false, address(0));
+        bytes memory ret;
+        (ok, ret) = target.staticcall(data);
+        if (!ok || ret.length < 32) return (false, address(0));
+        value = abi.decode(ret, (address));
+    }
+
+    function _callUint(address target, bytes memory data) internal view returns (bool ok, uint256 value) {
+        if (target == address(0) || target.code.length == 0) return (false, 0);
+        bytes memory ret;
+        (ok, ret) = target.staticcall(data);
+        if (!ok || ret.length < 32) return (false, 0);
+        value = abi.decode(ret, (uint256));
+    }
+
+    function _callReserves(address pair) internal view returns (bool ok, uint112 r0, uint112 r1) {
+        if (pair == address(0) || pair.code.length == 0) return (false, 0, 0);
+        bytes memory ret;
+        (ok, ret) = pair.staticcall(abi.encodeWithSignature("getReserves()"));
+        if (!ok || ret.length < 96) return (false, 0, 0);
+        uint32 ts;
+        (r0, r1, ts) = abi.decode(ret, (uint112, uint112, uint32));
+        ts;
+    }
+
+    function _setBalance(address token, address who, uint256 amount) internal returns (bool) {
+        for (uint256 slot = 0; slot < 80; slot++) {
+            bytes32 key = keccak256(abi.encode(who, slot));
+            bytes32 prev = vm.load(token, key);
+            vm.store(token, key, bytes32(amount));
+            if (IERC20Lite(token).balanceOf(who) == amount) return true;
+            vm.store(token, key, prev);
+        }
+        return false;
     }
 }
 """
+
 
 
 def is_graph_sim_eligible(ctx: TargetContext, candidate: FindingCandidate) -> bool:
@@ -291,20 +330,114 @@ def render_graph_simulation_markdown(plan: dict) -> str:
 
 
 def build_graph_protocol_probe(target: str, components: list[dict], scenario: str) -> str:
-    constants = []
-    asserts = []
-    for idx, component in enumerate(components[:12]):
-        addr = component.get("address")
-        if not addr or str(addr).lower() == str(target).lower():
-            continue
-        role = str(component.get("role") or "component").upper().replace("-", "_")
-        constants.append(f"    address constant {role}_{idx} = {addr};")
-        asserts.append(f'        require({role}_{idx}.code.length > 0, "{role}_{idx} has no code on fork");')
+    roles = _component_role_addresses(target, components)
+    role_constants = [
+        f"    address constant {name} = {addr};"
+        for name, addr in roles.items()
+    ]
+    asserts = [
+        f"        if ({name} != address(0)) require({name}.code.length > 0, \"{name} has no code on fork\");"
+        for name in roles
+        if name != "TARGET_ADDR"
+    ]
+    family_tests = _family_probe_tests(scenario)
     return (_GRAPH_PROTOCOL_PROBE
+            .replace("__CHEAT__", CHEAT_ADDR)
             .replace("__TARGET__", target)
-            .replace("__COMPONENT_CONSTANTS__", "\n".join(constants) or "    // no resolved companion constants")
+            .replace("__ROLE_CONSTANTS__", "\n".join(role_constants) or "    // no resolved role constants")
             .replace("__COMPONENT_ASSERTS__", "\n".join(asserts) or "        // no resolved companion code assertions")
-            .replace("__SCENARIO__", scenario.replace('"', "")))
+            .replace("__FAMILY_TESTS__", family_tests))
+
+
+def _component_role_addresses(target: str, components: list[dict]) -> dict[str, str]:
+    wanted = {
+        "oracle": "ORACLE",
+        "lending_controller": "LENDING_CONTROLLER",
+        "lending_market": "LENDING_MARKET",
+        "erc4626_vault": "ERC4626_VAULT",
+        "amm_pair": "AMM_PAIR",
+        "router": "ROUTER",
+        "strategy": "STRATEGY",
+        "verifier": "VERIFIER",
+        "bridge_messenger": "BRIDGE_MESSENGER",
+    }
+    out = {"TARGET_ADDR": target}
+    for component in components:
+        role = str(component.get("role") or "")
+        name = wanted.get(role)
+        addr = component.get("address")
+        if not name or not addr or name in out:
+            continue
+        out[name] = str(addr)
+    for name in wanted.values():
+        out.setdefault(name, "address(0)")
+    return out
+
+
+def _family_probe_tests(scenario: str) -> str:
+    tests = [
+        '''    function test_attack_scenario_plan_is_bound() external pure {
+        bytes32 scenario = keccak256(bytes("__SCENARIO__"));
+        require(scenario != bytes32(0), "empty scenario");
+    }
+'''.replace("__SCENARIO__", scenario.replace('"', ""))
+    ]
+    if scenario == "oracle_lending_bad_debt":
+        tests.append(_ERC4626_ORACLE_ASSERTION)
+    if scenario == "vault_redeem_share_accounting":
+        tests.append(_VAULT_REDEEM_ASSERTION)
+    if scenario == "amm_reserve_manipulation":
+        tests.append(_AMM_RESERVE_ASSERTION)
+    if scenario == "bridge_or_proof_domain_binding":
+        tests.append(_BRIDGE_PROOF_ASSERTION)
+    return "\n".join(tests)
+
+
+_ERC4626_ORACLE_ASSERTION = '''    function test_erc4626_share_rate_not_donation_sensitive() external {
+        address vault = ERC4626_VAULT != address(0) ? ERC4626_VAULT : TARGET;
+        (bool assetOk, address asset) = _callAddress(vault, abi.encodeWithSignature("asset()"));
+        (bool rateOk, uint256 rateBefore) = _callUint(vault, abi.encodeWithSignature("convertToAssets(uint256)", 1e18));
+        if (!assetOk || !rateOk || asset == address(0)) return;
+        uint256 bal = IERC20Lite(asset).balanceOf(vault);
+        uint256 donation = bal == 0 ? 1e24 : bal * 2 + 1;
+        if (!_setBalance(asset, vault, bal + donation)) return;
+        (, uint256 rateAfter) = _callUint(vault, abi.encodeWithSignature("convertToAssets(uint256)", 1e18));
+        require(rateAfter == rateBefore, "erc4626 share rate moved after unprivileged donation");
+    }
+'''
+
+_VAULT_REDEEM_ASSERTION = '''    function test_vault_convert_to_assets_conserved_by_total_assets() external view {
+        address vault = ERC4626_VAULT != address(0) ? ERC4626_VAULT : TARGET;
+        (bool supplyOk, uint256 supply) = _callUint(vault, abi.encodeWithSignature("totalSupply()"));
+        (bool assetsOk, uint256 assets) = _callUint(vault, abi.encodeWithSignature("totalAssets()"));
+        if (!supplyOk || !assetsOk || supply == 0) return;
+        (bool quoteOk, uint256 quote) = _callUint(vault, abi.encodeWithSignature("convertToAssets(uint256)", supply));
+        if (!quoteOk) return;
+        require(quote <= assets, "convertToAssets(totalSupply) exceeds totalAssets");
+    }
+'''
+
+_AMM_RESERVE_ASSERTION = '''    function test_amm_reserves_do_not_exceed_pair_balances() external view {
+        address pair = AMM_PAIR != address(0) ? AMM_PAIR : TARGET;
+        (bool t0Ok, address token0) = _callAddress(pair, abi.encodeWithSignature("token0()"));
+        (bool t1Ok, address token1) = _callAddress(pair, abi.encodeWithSignature("token1()"));
+        (bool rOk, uint112 r0, uint112 r1) = _callReserves(pair);
+        if (!t0Ok || !t1Ok || !rOk || token0 == address(0) || token1 == address(0)) return;
+        uint256 b0 = IERC20Lite(token0).balanceOf(pair);
+        uint256 b1 = IERC20Lite(token1).balanceOf(pair);
+        require(uint256(r0) <= b0 && uint256(r1) <= b1, "pair reserve exceeds token balance");
+    }
+'''
+
+_BRIDGE_PROOF_ASSERTION = '''    function test_bridge_verifier_and_messenger_are_distinct_contracts() external view {
+        if (VERIFIER != address(0)) require(VERIFIER.code.length > 0, "verifier has no code");
+        if (BRIDGE_MESSENGER != address(0)) require(BRIDGE_MESSENGER.code.length > 0, "messenger has no code");
+        if (VERIFIER != address(0) && BRIDGE_MESSENGER != address(0)) {
+            require(VERIFIER != BRIDGE_MESSENGER, "verifier and messenger unexpectedly share one address");
+        }
+    }
+'''
+
 
 
 def generate_graph_aware_simulation(

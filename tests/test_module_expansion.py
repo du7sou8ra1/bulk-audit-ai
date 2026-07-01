@@ -67,3 +67,25 @@ def test_expand_merges_verified_module_source():
 def test_no_expansion_when_no_rpc_and_no_explorer():
     merged, expanded = expand_module_sources(Down(), "0xabc", fetch=lambda a, c="ethereum": None, eth_call=_none)
     assert merged == {} and expanded == []
+
+
+def test_write_source_to_workspace_persists_compiler_metadata(tmp_path):
+    from backend.core.source_fetcher import write_source_to_workspace
+
+    pkg = SourcePackage(
+        address="0xabc",
+        verified=True,
+        contract_name="C",
+        source_files={"C.sol": "contract C {}"},
+        compiler_metadata={
+            "output": {
+                "storageLayout": {
+                    "storage": [{"label": "owner", "slot": "0", "offset": 0, "type": "t_address"}]
+                }
+            }
+        },
+    )
+
+    write_source_to_workspace(tmp_path / "source", pkg)
+    assert (tmp_path / "source" / "metadata.json").exists()
+    assert "storageLayout" in (tmp_path / "source" / "metadata.json").read_text(encoding="utf-8")

@@ -67,7 +67,7 @@ backend/outputs/scans/<scan_id>/<address>/
 | Mythril | Symbolic execution / bytecode fallback | Bounded fast pass; large runtime bytecode fallback is skipped so scans do not stall. |
 | Semgrep | Solidity pattern rules | Used as corroboration, not proof. |
 | Foundry | Read-only fork PoCs and simulations | Never broadcasts; private keys and broadcast commands are blocked. |
-| Graph-aware simulations | Multi-contract fork scenario plans and safe context probes from the protocol graph | Builds target + oracle/vault/market/pair/verifier/bridge plans; not counted as confirmed exploits unless a real assertion passes. |
+| Graph-aware simulations | Multi-contract fork scenario plans plus executable fork assertions from the protocol graph | Builds target + oracle/vault/market/pair/verifier/bridge plans and assertion probes for ERC-4626 oracle donation sensitivity, dual-asset redeem conservation, AMM reserve desync, and bridge/proof binding. |
 | Fuzzing / invariants | Foundry, Echidna, and Medusa starter suites plus detector-focused invariant harnesses | Existing campaigns run when configs exist; generated scaffolds are not counted as passed PoCs. |
 | DeepSeek/OpenAI-compatible model | Triage, invariant hypotheses, adversarial refutation | Uses strict prompts and post-processing guardrails. |
 
@@ -81,7 +81,7 @@ backend/outputs/scans/<scan_id>/<address>/
 - Weird-hunt detector pack: actual-received accounting, Merkle leaf binding, bitmap claim collision, bridge replay keys, address aliasing, oracle freshness/sequencer, TWAP cardinality, forced ETH accounting, CREATE2/metamorphic trust, try/catch finalization, reward-debt order, zero-supply accumulators, position split/merge, governance snapshot bypass, pause bypass, multicall state cache, WAD/RAY unit mismatch, duplicate batch items, and semantic taint value-flow leads.
 - Semantic index: shared Solidity facts for params, modifiers, guards, reads/writes, calls, decoded fields, events, mappings, external calls, and value sinks.
 - Protocol graph: cross-contract role graph that groups target, implementation/admin, oracle, lending controller, cToken/market, ERC-4626 wrapper, AMM pair, router, bridge, verifier, assets, and strategies; safe address getters become companion scan candidates, and optional companion expansion can enqueue resolved high-value dependencies in the same scan.
-- Storage-layout hints: EIP-1967 proxy slots, approximate declared variable slots, critical owner/admin/initializer/accounting/dependency slots, module/facet/delegatecall storage-sharing context, and read/write matrices for AI/refuter and PoC planning.
+- Storage-layout hints: EIP-1967 proxy slots, compiler-backed exact `storageLayout` slots when build-info/artifacts/Sourcify metadata provide them, approximate declared variable slots otherwise, critical owner/admin/initializer/accounting/dependency slots, module/facet/delegatecall storage-sharing context, and read/write matrices for AI/refuter and PoC planning.
 - Taint/dataflow core: caller/calldata/proof/oracle sources into value-transfer, delegatecall, upgrade, replay-marker, and accounting-write sinks, including simple external -> internal helper paths.
 - Invariant reasoner: LLM-assisted cross-function hypotheses over value-moving entrypoints.
 - Adversarial refuter: independent review pass that tries to disprove each candidate before final scoring.
@@ -232,6 +232,8 @@ cd .. && python -m backend.main                # serves the UI at / on :8791
 python -m backend.main scan --addresses addresses.txt --profile ultra-deep-v2
 python -m backend.main scan-one 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48
 python -m backend.main export --scan-id 1 --format zip
+python -m backend.main benchmark-detectors --profile ultra-deep-v2 --out detector-regression.json
+python -m backend.main benchmark-exploits --run --profile ultra-deep-v2 --out exploit-regression.json
 ```
 
 ---
@@ -359,9 +361,11 @@ Graph-aware fork simulation uses the protocol graph to build a validation plan
 across target + resolved companions. For example, oracle-lending findings get a
 plan across oracle/controller/market/vault components, AMM reserve findings get a
 pair/reserve desync plan, and vault findings get a redeem/value-conservation
-plan. The generated Foundry probe only checks fork context and component code;
-it never upgrades a finding to confirmed without a target-specific exploit
-assertion.
+plan. The generated Foundry probe now includes safe executable assertions for
+ERC-4626 exchange-rate donation sensitivity, dual-asset redeem double payment,
+AMM reserve/balance desync, and bridge/proof component binding. Passing context
+checks are still treated as scaffolding; only a real failing/passing exploit
+assertion should promote a finding to confirmed.
 
 ## Scoring & classification
 
@@ -416,7 +420,10 @@ cd frontend && npm run build
 
 Current validation covers detector fixtures, proxy/source handling, scoring,
 AI/refuter precision guardrails, value-context behavior, fuzzing harness
-generation, bytecode intelligence, and scan manager behavior.
+generation, bytecode intelligence, storage-layout extraction, graph simulation
+probe generation, and scan manager behavior. The GitHub Actions regression
+workflow runs the focused suite plus `benchmark-detectors` so known exploit-class
+fixtures block promotion when an expected detector/rule disappears.
 
 ---
 
@@ -473,11 +480,20 @@ simulation now generates a multi-contract validation plan plus a safe Foundry
 context probe for target + resolved protocol companions. These improve evidence
 and ranking without pretending a scaffold is a confirmed exploit.
 
+Elite Phase 15 is implemented: storage-layout extraction now consumes compiler
+`storageLayout` data from Foundry/Hardhat build-info, artifacts, and persisted
+Sourcify metadata when available; graph-aware simulations now emit executable
+assertion probes for ERC-4626 oracle donation sensitivity, dual-asset redeem
+conservation, AMM reserve desync, and bridge/proof component binding; and
+`.github/workflows/regression.yml` runs the deterministic exploited-contract
+detector fixture benchmark on CI through the `benchmark-detectors` CLI command.
+
 Recommended next improvements:
 
-1. Add compiler-backed exact storage layout extraction when full build metadata is available.
-2. Add a CI command that runs the exploited-contract detector regression pack on
-   every deploy and blocks promotion when an expected detector/rule is missing.
-3. Convert graph-aware plans into family-specific executable assertions for the
-   highest-value incident classes: ERC-4626 collateral oracle, AMM reserve desync,
-   dual-asset redeem, and bridge/proof binding.
+1. Add optional on-demand recompilation for verified source when only standard
+   JSON input exists and no compiler output/build-info is available.
+2. Add graph-aware fork action executors for the top detector families so more
+   generated assertions exercise the full attack path, not only invariant probes.
+3. Expand the CI benchmark into two lanes: fast detector fixtures on every push
+   and scheduled live exploited-contract scans when RPC/explorer secrets are
+   available.

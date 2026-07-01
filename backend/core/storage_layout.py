@@ -19,6 +19,7 @@ from .proxy_resolver import ADMIN_SLOT, BEACON_SLOT, IMPL_SLOT, LEGACY_IMPL_SLOT
 
 TOOL_NAME = "storage-layout"
 SCHEMA = "bulk-audit-storage-layout/v1"
+_MAX_LAYOUT_JSON_BYTES = 6_000_000
 
 _STATE_RE = re.compile(
     r"^\s*(?P<type>mapping\s*\([^;]+\)|[A-Za-z_]\w*(?:\s+payable)?(?:\[[^\]]*\])?|address\s+payable|uint\d*|int\d*|bytes\d*|bytes|string|bool)\s+"
@@ -68,7 +69,8 @@ def build_storage_layout(ctx: TargetContext) -> dict[str, Any]:
     declarations = _declared_state_vars(ctx.source_files or {})
     semantic = getattr(ctx, "semantic", None)
     rw = _read_write_matrix(semantic)
-    slot_hints = _assign_slot_hints(declarations, rw)
+    exact_layout = discover_exact_storage_layouts(ctx.workspace, ctx.contract_name, ctx.source_files)
+    slot_hints = _assign_slot_hints(declarations, rw, exact_layout.get("selected") or {})
     proxy_slots = _proxy_slot_hints(ctx)
     module_context = _module_context(ctx, declarations, semantic)
     critical_slots = _critical_slot_hints(slot_hints, rw)
@@ -92,6 +94,7 @@ def build_storage_layout(ctx: TargetContext) -> dict[str, Any]:
         },
         "proxy_slots": proxy_slots,
         "declared_slots": slot_hints,
+        "exact_storage_layout": exact_layout,
         "critical_slots": critical_slots,
         "read_write_matrix": rw,
         "module_context": module_context,
@@ -105,6 +108,9 @@ def build_storage_layout(ctx: TargetContext) -> dict[str, Any]:
             "sample_count": len(samples),
             "critical_families": dict(sorted(by_family.items())),
             "has_proxy_storage": bool(proxy_slots),
+            "has_exact_storage_layout": bool(exact_layout.get("available")),
+            "exact_storage_contract": exact_layout.get("selected_contract"),
+            "exact_storage_source": exact_layout.get("selected_source"),
             "has_delegatecall_or_modules": any(row.get("kind") in {"delegatecall", "module_source", "proxy_storage"} for row in module_context),
         },
     }
@@ -128,6 +134,14 @@ def render_storage_layout_markdown(layout: dict[str, Any]) -> str:
             lines.append(f"- `{row.get('family')}` `{row.get('name')}` slot `{slot}` ({row.get('source_group')})")
     else:
         lines.append("- none inferred")
+    lines.extend(["", "## Exact Compiler Layout"])
+    exact = layout.get("exact_storage_layout") or {}
+    if exact.get("available"):
+        lines.append(f"- selected `{exact.get('selected_contract')}` from `{exact.get('selected_source')}`")
+        for row in (exact.get("selected") or {}).get("storage", [])[:30]:
+            lines.append(f"- `{row.get('label')}` slot `{row.get('slot')}` offset `{row.get('offset')}` type `{row.get('type')}`")
+    else:
+        lines.append("- not available; using heuristic declaration-order slot hints")
     lines.extend(["", "## Proxy Slots"])
     for row in layout.get("proxy_slots") or []:
         lines.append(f"- `{row.get('name')}` `{row.get('slot_hex')}` value `{row.get('value') or 'unknown'}`")
@@ -148,6 +162,12 @@ def compact_storage_context(layout: dict[str, Any] | None, *, max_rows: int = 16
     return {
         "summary": layout.get("summary") or {},
         "proxy_slots": (layout.get("proxy_slots") or [])[:8],
+        "exact_storage_layout": {
+            "available": bool((layout.get("exact_storage_layout") or {}).get("available")),
+            "selected_contract": (layout.get("exact_storage_layout") or {}).get("selected_contract"),
+            "selected_source": (layout.get("exact_storage_layout") or {}).get("selected_source"),
+            "storage": (((layout.get("exact_storage_layout") or {}).get("selected") or {}).get("storage") or [])[:max_rows],
+        },
         "critical_slots": (layout.get("critical_slots") or [])[:max_rows],
         "module_context": (layout.get("module_context") or [])[:8],
         "collision_hints": (layout.get("collision_hints") or [])[:8],
@@ -155,7 +175,155 @@ def compact_storage_context(layout: dict[str, Any] | None, *, max_rows: int = 16
     }
 
 
-def _declared_state_vars(source_files: dict[str, str]) -> list[dict[str, Any]]:
+def discover_exact_storage_layouts(
+    workspace: Path | str | None,
+    contract_name: str | None = None,
+    source_files: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Discover compiler-emitted storage layouts from local artifacts/build-info.
+
+    Supports Foundry/Hardhat build-info (`output.contracts.*.*.storageLayout`),
+    Hardhat artifacts (`storageLayout` at top level), and Sourcify/metadata-like
+    JSON (`output.storageLayout`). Returns a compact selected layout plus a list
+    of discovered contract layouts. No solc invocation is attempted here.
+    """
+    root = Path(workspace) if workspace else None
+    layouts: list[dict[str, Any]] = []
+    if root and root.exists():
+        for path in _candidate_layout_json_files(root):
+            try:
+                if path.stat().st_size > _MAX_LAYOUT_JSON_BYTES:
+                    continue
+                data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+            except Exception:
+                continue
+            layouts.extend(_extract_storage_layouts_from_json(data, path))
+
+    selected = _select_exact_layout(layouts, contract_name, source_files or {})
+    return {
+        "available": bool(selected),
+        "selected_contract": selected.get("contract_name") if selected else None,
+        "selected_source": selected.get("artifact_path") if selected else None,
+        "selected": selected or {},
+        "layouts": [
+            {
+                "contract_name": row.get("contract_name"),
+                "source_path": row.get("source_path"),
+                "artifact_path": row.get("artifact_path"),
+                "storage_count": len(row.get("storage") or []),
+            }
+            for row in layouts[:80]
+        ],
+    }
+
+
+def _candidate_layout_json_files(root: Path) -> list[Path]:
+    interesting = []
+    preferred_parts = {"build-info", "artifacts", "out", "cache", "source", "sources"}
+    for path in root.rglob("*.json"):
+        rel_parts = {part.lower() for part in path.relative_to(root).parts[:-1]}
+        name = path.name.lower()
+        if rel_parts & preferred_parts or "metadata" in name or "artifact" in name:
+            interesting.append(path)
+    return sorted(interesting)
+
+
+def _extract_storage_layouts_from_json(data: Any, artifact_path: Path) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    if not isinstance(data, dict):
+        return out
+
+    def add_layout(layout: Any, *, contract_name: str = "", source_path: str = "") -> None:
+        if not isinstance(layout, dict):
+            return
+        storage = layout.get("storage")
+        if not isinstance(storage, list) or not storage:
+            return
+        types = layout.get("types") if isinstance(layout.get("types"), dict) else {}
+        out.append({
+            "contract_name": contract_name,
+            "source_path": source_path,
+            "artifact_path": str(artifact_path),
+            "storage": [_normalize_exact_storage_entry(entry, types) for entry in storage if isinstance(entry, dict)],
+            "types": types,
+        })
+
+    add_layout(data.get("storageLayout"), contract_name=str(data.get("contractName") or data.get("contract_name") or ""), source_path=str(data.get("sourceName") or ""))
+
+    output = data.get("output") if isinstance(data.get("output"), dict) else {}
+    add_layout(output.get("storageLayout"), contract_name=_metadata_contract_name(data), source_path=_metadata_source_path(data))
+
+    contracts = output.get("contracts") if isinstance(output.get("contracts"), dict) else data.get("contracts")
+    if isinstance(contracts, dict):
+        for source_path, contract_map in contracts.items():
+            if not isinstance(contract_map, dict):
+                continue
+            for contract_name, artifact in contract_map.items():
+                if isinstance(artifact, dict):
+                    add_layout(artifact.get("storageLayout"), contract_name=str(contract_name), source_path=str(source_path))
+    return [row for row in out if row.get("storage")]
+
+
+def _normalize_exact_storage_entry(entry: dict[str, Any], types: dict[str, Any]) -> dict[str, Any]:
+    slot_raw = entry.get("slot")
+    offset_raw = entry.get("offset")
+    type_id = str(entry.get("type") or "")
+    type_meta = types.get(type_id) if isinstance(types, dict) else None
+    return {
+        "label": entry.get("label") or entry.get("name"),
+        "slot": _safe_int(slot_raw),
+        "slot_raw": str(slot_raw) if slot_raw is not None else None,
+        "slot_hex": hex(_safe_int(slot_raw)) if _safe_int(slot_raw) is not None else None,
+        "offset": _safe_int(offset_raw),
+        "type": type_id,
+        "type_label": (type_meta or {}).get("label") if isinstance(type_meta, dict) else None,
+        "bytes": _safe_int((type_meta or {}).get("numberOfBytes")) if isinstance(type_meta, dict) else None,
+        "contract": entry.get("contract"),
+        "ast_id": entry.get("astId"),
+    }
+
+
+def _select_exact_layout(layouts: list[dict[str, Any]], contract_name: str | None, source_files: dict[str, str]) -> dict[str, Any] | None:
+    if not layouts:
+        return None
+    target = (contract_name or "").lower()
+    if target:
+        for row in layouts:
+            if str(row.get("contract_name") or "").lower() == target:
+                return row
+    source_names = {Path(p).name.lower() for p in source_files}
+    for row in layouts:
+        if Path(str(row.get("source_path") or "")).name.lower() in source_names:
+            return row
+    if len(layouts) == 1:
+        return layouts[0]
+    return max(layouts, key=lambda row: len(row.get("storage") or []))
+
+
+def _metadata_contract_name(data: dict[str, Any]) -> str:
+    target = ((data.get("settings") or {}).get("compilationTarget") or {}) if isinstance(data.get("settings"), dict) else {}
+    if isinstance(target, dict) and target:
+        return str(next(iter(target.values())) or "")
+    return ""
+
+
+def _metadata_source_path(data: dict[str, Any]) -> str:
+    target = ((data.get("settings") or {}).get("compilationTarget") or {}) if isinstance(data.get("settings"), dict) else {}
+    if isinstance(target, dict) and target:
+        return str(next(iter(target.keys())) or "")
+    return ""
+
+
+def _safe_int(value: Any) -> int | None:
+    try:
+        if value is None:
+            return None
+        return int(str(value), 0)
+    except Exception:
+        return None
+
+
+def _declared_state_vars(source_files: dict[str, str] | None) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for path, raw in sorted((source_files or {}).items()):
         if not raw:
@@ -179,12 +347,27 @@ def _declared_state_vars(source_files: dict[str, str]) -> list[dict[str, Any]]:
     return out
 
 
-def _assign_slot_hints(declarations: list[dict[str, Any]], rw: dict[str, Any]) -> list[dict[str, Any]]:
+def _assign_slot_hints(declarations: list[dict[str, Any]], rw: dict[str, Any], exact_layout: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     slots_by_group: dict[str, int] = defaultdict(int)
+    exact_by_name = {
+        str(entry.get("label") or ""): entry
+        for entry in ((exact_layout or {}).get("storage") or [])
+        if entry.get("label")
+    }
     out: list[dict[str, Any]] = []
     for decl in declarations:
         row = dict(decl)
-        if row.get("is_constant_like"):
+        name = str(row.get("name") or "")
+        exact = exact_by_name.get(name)
+        if exact:
+            row["slot"] = exact.get("slot")
+            row["slot_hex"] = exact.get("slot_hex")
+            row["slot_offset"] = exact.get("offset")
+            row["storage_type"] = exact.get("type")
+            row["storage_type_label"] = exact.get("type_label")
+            row["slot_exact"] = True
+            row["slot_note"] = "exact compiler storageLayout slot"
+        elif row.get("is_constant_like"):
             row["slot"] = None
             row["slot_note"] = "constant/immutable: no normal storage slot"
         else:
@@ -193,8 +376,8 @@ def _assign_slot_hints(declarations: list[dict[str, Any]], rw: dict[str, Any]) -
             slots_by_group[group] += 1
             row["slot"] = slot
             row["slot_hex"] = hex(slot)
+            row["slot_exact"] = False
             row["slot_note"] = "approximate declaration-order slot; use compiler storageLayout for exact packing"
-        name = str(row.get("name") or "")
         matrix = rw.get(name) or {}
         row["read_by"] = matrix.get("read_by", [])[:12]
         row["written_by"] = matrix.get("written_by", [])[:12]

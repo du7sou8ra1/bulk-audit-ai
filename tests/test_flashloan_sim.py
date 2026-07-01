@@ -100,8 +100,32 @@ def test_graph_simulation_plan_and_probe_generation():
     assert "Graph-Aware Fork Simulation Plan" in md and "borrowed value" in md
     probe = flashloan_sim.build_graph_protocol_probe(ctx.address, plan["components"], plan["scenario"])
     assert "GraphProtocolProbe" in probe
-    assert "ORACLE_1.code.length" in probe
-    assert "LENDING_CONTROLLER_2.code.length" in probe
+    assert "address constant ORACLE = 0x1111111111111111111111111111111111111111" in probe
+    assert "address constant LENDING_CONTROLLER = 0x2222222222222222222222222222222222222222" in probe
+    assert "test_erc4626_share_rate_not_donation_sensitive" in probe
+    assert "erc4626 share rate moved after unprivileged donation" in probe
+
+
+def test_graph_protocol_probe_family_assertions():
+    target = "0x000000000000000000000000000000000000dEaD"
+    components = [
+        {"role": "erc4626_vault", "address": "0x1111111111111111111111111111111111111111", "label": "vault"},
+        {"role": "amm_pair", "address": "0x2222222222222222222222222222222222222222", "label": "pair"},
+        {"role": "verifier", "address": "0x3333333333333333333333333333333333333333", "label": "verifier"},
+        {"role": "bridge_messenger", "address": "0x4444444444444444444444444444444444444444", "label": "messenger"},
+    ]
+
+    vault_probe = flashloan_sim.build_graph_protocol_probe(target, components, "vault_redeem_share_accounting")
+    assert "test_vault_convert_to_assets_conserved_by_total_assets" in vault_probe
+    assert "convertToAssets(totalSupply) exceeds totalAssets" in vault_probe
+
+    amm_probe = flashloan_sim.build_graph_protocol_probe(target, components, "amm_reserve_manipulation")
+    assert "test_amm_reserves_do_not_exceed_pair_balances" in amm_probe
+    assert "pair reserve exceeds token balance" in amm_probe
+
+    bridge_probe = flashloan_sim.build_graph_protocol_probe(target, components, "bridge_or_proof_domain_binding")
+    assert "test_bridge_verifier_and_messenger_are_distinct_contracts" in bridge_probe
+    assert "verifier and messenger unexpectedly share one address" in bridge_probe
 
 
 def test_generate_graph_aware_simulation_writes_plan_and_safe_probe(tmp_path):

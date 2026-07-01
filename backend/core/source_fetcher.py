@@ -36,6 +36,7 @@ class SourcePackage:
     optimization_runs: int = 0
     source_files: dict[str, str] = field(default_factory=dict)
     abi: list | dict | None = None
+    compiler_metadata: dict | None = None
     is_proxy: bool = False
     implementation: str | None = None
     raw_source_code: str = ""
@@ -277,6 +278,7 @@ def fetch_sourcify_source(address: str, chain: str = "ethereum") -> SourcePackag
     pkg.source_files = sources
     pkg.raw_source_code = next(iter(sources.values()), "")
     if metadata_json:
+        pkg.compiler_metadata = metadata_json
         comp = (metadata_json.get("compiler") or {}).get("version", "")
         pkg.compiler_version = comp
         settings_meta = metadata_json.get("settings") or {}
@@ -358,6 +360,10 @@ def write_source_to_workspace(source_dir: Path, pkg: SourcePackage) -> Path:
     if pkg.abi is not None:
         (source_dir / "abi.json").write_text(
             json.dumps(pkg.abi, indent=2), encoding="utf-8"
+        )
+    if pkg.compiler_metadata is not None:
+        (source_dir / "metadata.json").write_text(
+            json.dumps(pkg.compiler_metadata, indent=2, sort_keys=True), encoding="utf-8"
         )
     meta = {
         "address": pkg.address,

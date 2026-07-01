@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from backend.core.proxy_resolver import IMPL_SLOT, ProxyInfo
@@ -75,3 +76,44 @@ def test_storage_layout_marks_proxy_critical_slots_and_module_context():
 def test_storage_layout_runner_writes_outputs_and_compact_context(tmp_path):
     res = run_storage_layout(_ctx(), tmp_path)
     assert res.status == "ok"
+
+
+def test_storage_layout_uses_exact_compiler_build_info_slots(tmp_path):
+    build_info = {
+        "output": {
+            "contracts": {
+                "VaultProxyLike.sol": {
+                    "VaultProxyLike": {
+                        "storageLayout": {
+                            "storage": [
+                                {"label": "owner", "slot": "7", "offset": 0, "type": "t_address"},
+                                {"label": "priceOracle", "slot": "8", "offset": 0, "type": "t_address"},
+                                {"label": "balances", "slot": "9", "offset": 0, "type": "t_mapping"},
+                            ],
+                            "types": {
+                                "t_address": {"label": "address", "numberOfBytes": "20"},
+                                "t_mapping": {"label": "mapping(address => uint256)", "numberOfBytes": "32"},
+                            },
+                        }
+                    }
+                }
+            }
+        }
+    }
+    build_dir = tmp_path / "out" / "build-info"
+    build_dir.mkdir(parents=True)
+    (build_dir / "build.json").write_text(json.dumps(build_info), encoding="utf-8")
+
+    ctx = _ctx()
+    ctx.workspace = tmp_path
+    layout = build_storage_layout(ctx)
+
+    assert layout["summary"]["has_exact_storage_layout"] is True
+    assert layout["summary"]["exact_storage_contract"] == "VaultProxyLike"
+    by_name = {row["name"]: row for row in layout["declared_slots"]}
+    assert by_name["owner"]["slot"] == 7
+    assert by_name["owner"]["slot_exact"] is True
+    assert by_name["priceOracle"]["storage_type_label"] == "address"
+    compact = compact_storage_context(layout)
+    assert compact["exact_storage_layout"]["available"] is True
+    assert compact["exact_storage_layout"]["storage"][0]["label"] == "owner"
