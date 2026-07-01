@@ -72,3 +72,59 @@ def test_generate_falls_back_to_scaffold_without_onchain(tmp_path):
         _ctx(abi), cand, tmp_path / "sim", rpc_url="", timeout=10)
     assert res["generated"] is False and res["scaffold"] is True
     assert (tmp_path / "sim" / "test" / "FlashLoanProbe.t.sol").exists()
+
+
+def test_graph_simulation_plan_and_probe_generation():
+    ctx = _ctx([])
+    ctx.protocol_graph = {
+        "surfaces": [{"id": "oracle_lending"}],
+        "nodes": [
+            {"role": "oracle", "label": "oracle", "address": "0x1111111111111111111111111111111111111111", "source": "state_var"},
+            {"role": "lending_controller", "label": "comptroller", "address": "0x2222222222222222222222222222222222222222", "source": "state_var"},
+            {"role": "asset", "label": "usdc", "address": "0x3333333333333333333333333333333333333333", "source": "state_var"},
+        ],
+    }
+    cand = FindingCandidate(
+        detector="economic_oracle_lending",
+        title="oracle controls borrow capacity",
+        description="x",
+        impact_score=9.0,
+        evidence={"bug_class": "erc4626_collateral_oracle"},
+    )
+
+    assert flashloan_sim.is_graph_sim_eligible(ctx, cand) is True
+    plan = flashloan_sim.build_graph_simulation_plan(ctx, cand)
+    assert plan["scenario"] == "oracle_lending_bad_debt"
+    assert [c["role"] for c in plan["components"]] == ["target", "oracle", "lending_controller"]
+    md = flashloan_sim.render_graph_simulation_markdown(plan)
+    assert "Graph-Aware Fork Simulation Plan" in md and "borrowed value" in md
+    probe = flashloan_sim.build_graph_protocol_probe(ctx.address, plan["components"], plan["scenario"])
+    assert "GraphProtocolProbe" in probe
+    assert "ORACLE_1.code.length" in probe
+    assert "LENDING_CONTROLLER_2.code.length" in probe
+
+
+def test_generate_graph_aware_simulation_writes_plan_and_safe_probe(tmp_path):
+    ctx = _ctx([])
+    ctx.protocol_graph = {
+        "surfaces": [{"id": "amm_reserve_dependency"}],
+        "nodes": [
+            {"role": "amm_pair", "label": "pair", "address": "0x1111111111111111111111111111111111111111", "source": "state_var"},
+        ],
+    }
+    cand = FindingCandidate(
+        detector="amm_pair_reserve_desync",
+        title="pair reserve desync",
+        description="x",
+        impact_score=9.0,
+        evidence={"bug_class": "reserve_desync"},
+    )
+
+    res = flashloan_sim.generate_graph_aware_simulation(
+        ctx, cand, tmp_path / "graph", rpc_url="", timeout=10
+    )
+    assert res["generated"] is True and res["scaffold"] is True
+    assert res["scenario"] == "amm_reserve_manipulation"
+    assert res["runner_status"] == "skipped"
+    assert (tmp_path / "graph" / "graph_simulation.json").exists()
+    assert (tmp_path / "graph" / "test" / "GraphProtocolProbe.t.sol").exists()

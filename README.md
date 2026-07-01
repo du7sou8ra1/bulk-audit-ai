@@ -67,6 +67,7 @@ backend/outputs/scans/<scan_id>/<address>/
 | Mythril | Symbolic execution / bytecode fallback | Bounded fast pass; large runtime bytecode fallback is skipped so scans do not stall. |
 | Semgrep | Solidity pattern rules | Used as corroboration, not proof. |
 | Foundry | Read-only fork PoCs and simulations | Never broadcasts; private keys and broadcast commands are blocked. |
+| Graph-aware simulations | Multi-contract fork scenario plans and safe context probes from the protocol graph | Builds target + oracle/vault/market/pair/verifier/bridge plans; not counted as confirmed exploits unless a real assertion passes. |
 | Fuzzing / invariants | Foundry, Echidna, and Medusa starter suites plus detector-focused invariant harnesses | Existing campaigns run when configs exist; generated scaffolds are not counted as passed PoCs. |
 | DeepSeek/OpenAI-compatible model | Triage, invariant hypotheses, adversarial refutation | Uses strict prompts and post-processing guardrails. |
 
@@ -80,6 +81,7 @@ backend/outputs/scans/<scan_id>/<address>/
 - Weird-hunt detector pack: actual-received accounting, Merkle leaf binding, bitmap claim collision, bridge replay keys, address aliasing, oracle freshness/sequencer, TWAP cardinality, forced ETH accounting, CREATE2/metamorphic trust, try/catch finalization, reward-debt order, zero-supply accumulators, position split/merge, governance snapshot bypass, pause bypass, multicall state cache, WAD/RAY unit mismatch, duplicate batch items, and semantic taint value-flow leads.
 - Semantic index: shared Solidity facts for params, modifiers, guards, reads/writes, calls, decoded fields, events, mappings, external calls, and value sinks.
 - Protocol graph: cross-contract role graph that groups target, implementation/admin, oracle, lending controller, cToken/market, ERC-4626 wrapper, AMM pair, router, bridge, verifier, assets, and strategies; safe address getters become companion scan candidates, and optional companion expansion can enqueue resolved high-value dependencies in the same scan.
+- Storage-layout hints: EIP-1967 proxy slots, approximate declared variable slots, critical owner/admin/initializer/accounting/dependency slots, module/facet/delegatecall storage-sharing context, and read/write matrices for AI/refuter and PoC planning.
 - Taint/dataflow core: caller/calldata/proof/oracle sources into value-transfer, delegatecall, upgrade, replay-marker, and accounting-write sinks, including simple external -> internal helper paths.
 - Invariant reasoner: LLM-assisted cross-function hypotheses over value-moving entrypoints.
 - Adversarial refuter: independent review pass that tries to disprove each candidate before final scoring.
@@ -353,6 +355,14 @@ configs, BulkAuditAI runs those bounded existing campaigns. Generated harnesses
 are validation scaffolds; they are not counted as passed exploits unless a real
 assertion/test succeeds.
 
+Graph-aware fork simulation uses the protocol graph to build a validation plan
+across target + resolved companions. For example, oracle-lending findings get a
+plan across oracle/controller/market/vault components, AMM reserve findings get a
+pair/reserve desync plan, and vault findings get a redeem/value-conservation
+plan. The generated Foundry probe only checks fork context and component code;
+it never upgrades a finding to confirmed without a target-specific exploit
+assertion.
+
 ## Scoring & classification
 
 Detectors emit base `impact` + `confidence` (0–10). Scoring then adjusts:
@@ -457,10 +467,17 @@ opt-in from API/env, enabled by default when selecting `ultra-deep-v2` in the UI
 limited by per-scan and hard caps, deduped against existing targets, and excludes
 generic asset tokens so the auditor focuses on exploit-relevant components.
 
+Elite Phase 14 is implemented: `backend/core/storage_layout.py` adds storage
+layout hints for proxy/module/cross-contract bugs, and graph-aware fork
+simulation now generates a multi-contract validation plan plus a safe Foundry
+context probe for target + resolved protocol companions. These improve evidence
+and ranking without pretending a scaffold is a confirmed exploit.
+
 Recommended next improvements:
 
-1. Add storage-layout hints for cross-contract bugs and proxy/module scans before AI review.
+1. Add compiler-backed exact storage layout extraction when full build metadata is available.
 2. Add a CI command that runs the exploited-contract detector regression pack on
    every deploy and blocks promotion when an expected detector/rule is missing.
-3. Add graph-aware fork simulations that run one scenario across target + oracle
-   + vault/market/pair instead of only one contract at a time.
+3. Convert graph-aware plans into family-specific executable assertions for the
+   highest-value incident classes: ERC-4626 collateral oracle, AMM reserve desync,
+   dual-asset redeem, and bridge/proof binding.

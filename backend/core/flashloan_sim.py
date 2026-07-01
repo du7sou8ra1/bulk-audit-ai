@@ -20,6 +20,7 @@ only, ffi disabled, no broadcast/keys (the foundry_runner refuses those tokens).
 """
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 
@@ -176,6 +177,266 @@ def build_flashloan_scaffold(target: str, price_fn: str | None) -> str:
     return (_FLASHLOAN_SCAFFOLD
             .replace("__TARGET__", target)
             .replace("__PRICE_FN__", price_fn or "pricePerShare"))
+
+
+_GRAPH_SIM_DETECTORS = {
+    "economic_oracle_lending",
+    "oracle_manipulation",
+    "thin_liquidity_spot_oracle",
+    "lending_exchange_rate_donation",
+    "vault_share_donation_inflation",
+    "erc4626_dual_asset_redeem_double_count",
+    "amm_pair_reserve_desync",
+    "hook_pair_burn_sync",
+}
+_GRAPH_SIM_BUG_CLASSES = {
+    "oracle",
+    "erc4626_collateral_oracle",
+    "vault_accounting",
+    "amm_reserve_desync",
+    "reserve_desync",
+    "lending_exchange_rate_donation",
+}
+_GRAPH_SIM_ROLES = {
+    "oracle",
+    "lending_controller",
+    "lending_market",
+    "erc4626_vault",
+    "amm_pair",
+    "router",
+    "strategy",
+    "verifier",
+    "bridge_messenger",
+}
+
+_GRAPH_PROTOCOL_PROBE = """// SPDX-License-Identifier: MIT
+// AUTO-GENERATED GRAPH-AWARE FORK CONTEXT PROBE - local fork only. DO NOT BROADCAST.
+// It validates that the resolved protocol-group addresses have code and records
+// the scenario plan. It is NOT exploit proof by itself.
+pragma solidity ^0.8.19;
+
+contract GraphProtocolProbe {
+    address constant TARGET = __TARGET__;
+__COMPONENT_CONSTANTS__
+
+    function test_protocol_components_have_code() external view {
+        require(TARGET.code.length > 0, "target has no code on fork");
+__COMPONENT_ASSERTS__
+    }
+
+    function test_attack_scenario_plan_is_bound() external pure {
+        bytes32 scenario = keccak256(bytes("__SCENARIO__"));
+        require(scenario != bytes32(0), "empty scenario");
+    }
+}
+"""
+
+
+def is_graph_sim_eligible(ctx: TargetContext, candidate: FindingCandidate) -> bool:
+    graph = getattr(ctx, "protocol_graph", None) or {}
+    components = _graph_components(ctx)
+    if len(components) < 2:
+        return False
+    detector = str(candidate.detector or "")
+    bug_class = str((candidate.evidence or {}).get("bug_class") or "")
+    if detector in _GRAPH_SIM_DETECTORS or bug_class in _GRAPH_SIM_BUG_CLASSES:
+        return True
+    surface_ids = {str(surface.get("id") or "") for surface in graph.get("surfaces") or []}
+    return bool(surface_ids & {"oracle_lending", "erc4626_collateral_oracle", "amm_reserve_dependency", "vault_share_accounting"}) and candidate.impact_score >= 7
+
+
+def build_graph_simulation_plan(ctx: TargetContext, candidate: FindingCandidate) -> dict:
+    graph = getattr(ctx, "protocol_graph", None) or {}
+    components = _graph_components(ctx)
+    scenario = _pick_graph_scenario(graph, candidate)
+    return {
+        "schema": "bulk-audit-graph-sim/v1",
+        "target": {"address": ctx.address, "chain": ctx.chain, "contract_name": ctx.contract_name},
+        "candidate": {
+            "detector": candidate.detector,
+            "title": candidate.title,
+            "bug_class": (candidate.evidence or {}).get("bug_class"),
+            "affected_functions": candidate.affected_functions,
+        },
+        "scenario": scenario,
+        "components": components,
+        "steps": _scenario_steps(scenario, components),
+        "assertions": _scenario_assertions(scenario),
+        "notes": [
+            "Generated from protocol graph resolved addresses; use as a fork validation harness, not a confirmed exploit.",
+            "Fill in the target-specific action path where TODO-like comments are present in the Markdown plan.",
+        ],
+    }
+
+
+def render_graph_simulation_markdown(plan: dict) -> str:
+    lines = [
+        "# Graph-Aware Fork Simulation Plan",
+        "",
+        f"Scenario: `{plan.get('scenario')}`",
+        f"Target: `{((plan.get('target') or {}).get('contract_name') or (plan.get('target') or {}).get('address') or 'unknown')}`",
+        "",
+        "## Components",
+    ]
+    for component in plan.get("components") or []:
+        lines.append(f"- `{component.get('role')}` `{component.get('label')}` `{component.get('address')}`")
+    lines.extend(["", "## Steps"])
+    for i, step in enumerate(plan.get("steps") or [], 1):
+        lines.append(f"{i}. {step}")
+    lines.extend(["", "## Assertions"])
+    for assertion in plan.get("assertions") or []:
+        lines.append(f"- {assertion}")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def build_graph_protocol_probe(target: str, components: list[dict], scenario: str) -> str:
+    constants = []
+    asserts = []
+    for idx, component in enumerate(components[:12]):
+        addr = component.get("address")
+        if not addr or str(addr).lower() == str(target).lower():
+            continue
+        role = str(component.get("role") or "component").upper().replace("-", "_")
+        constants.append(f"    address constant {role}_{idx} = {addr};")
+        asserts.append(f'        require({role}_{idx}.code.length > 0, "{role}_{idx} has no code on fork");')
+    return (_GRAPH_PROTOCOL_PROBE
+            .replace("__TARGET__", target)
+            .replace("__COMPONENT_CONSTANTS__", "\n".join(constants) or "    // no resolved companion constants")
+            .replace("__COMPONENT_ASSERTS__", "\n".join(asserts) or "        // no resolved companion code assertions")
+            .replace("__SCENARIO__", scenario.replace('"', "")))
+
+
+def generate_graph_aware_simulation(
+    ctx: TargetContext,
+    candidate: FindingCandidate,
+    sim_dir: Path,
+    *,
+    rpc_url: str,
+    timeout: int,
+) -> dict:
+    if not is_graph_sim_eligible(ctx, candidate):
+        return {"generated": False, "skipped": True, "note": "candidate has no resolved protocol group"}
+
+    plan = build_graph_simulation_plan(ctx, candidate)
+    sim_dir.mkdir(parents=True, exist_ok=True)
+    (sim_dir / "foundry.toml").write_text(_foundry_toml(), encoding="utf-8")
+    (sim_dir / "test").mkdir(parents=True, exist_ok=True)
+    (sim_dir / "src").mkdir(parents=True, exist_ok=True)
+    (sim_dir / "graph_simulation.json").write_text(json.dumps(plan, indent=2, sort_keys=True, default=str), encoding="utf-8")
+    (sim_dir / "graph_simulation.md").write_text(render_graph_simulation_markdown(plan), encoding="utf-8")
+    probe = build_graph_protocol_probe(ctx.address, plan.get("components") or [], str(plan.get("scenario") or "protocol_group"))
+    (sim_dir / "test" / "GraphProtocolProbe.t.sol").write_text(probe, encoding="utf-8")
+
+    from ..runners.foundry_runner import run_forge_tests
+
+    runner = run_forge_tests(
+        sim_dir,
+        sim_dir / "out_logs",
+        rpc_url=rpc_url,
+        timeout=timeout,
+        match_path="test/GraphProtocolProbe.t.sol",
+    )
+    note = (
+        f"graph-aware fork context probe: {runner.summary}; scenario={plan.get('scenario')}; "
+        f"components={len(plan.get('components') or [])}"
+    )
+    return {
+        "generated": True,
+        "scaffold": True,
+        "scenario": plan.get("scenario"),
+        "components": plan.get("components") or [],
+        "plan_path": str(sim_dir / "graph_simulation.json"),
+        "markdown_path": str(sim_dir / "graph_simulation.md"),
+        "runner": runner,
+        "runner_status": runner.status,
+        "note": note,
+    }
+
+
+def _graph_components(ctx: TargetContext) -> list[dict]:
+    graph = getattr(ctx, "protocol_graph", None) or {}
+    out = [{"role": "target", "label": ctx.contract_name or "target", "address": ctx.address, "source": "scan_target"}]
+    seen = {str(ctx.address).lower()}
+    for node in graph.get("nodes") or []:
+        role = str(node.get("role") or "")
+        addr = node.get("address")
+        if role not in _GRAPH_SIM_ROLES or not addr:
+            continue
+        low = str(addr).lower()
+        if low in seen:
+            continue
+        seen.add(low)
+        out.append({
+            "role": role,
+            "label": node.get("label") or role,
+            "address": str(addr),
+            "source": node.get("source"),
+            "confidence": node.get("confidence"),
+        })
+    return out[:16]
+
+
+def _pick_graph_scenario(graph: dict, candidate: FindingCandidate) -> str:
+    detector = str(candidate.detector or "")
+    bug_class = str((candidate.evidence or {}).get("bug_class") or "")
+    surface_ids = {str(surface.get("id") or "") for surface in graph.get("surfaces") or []}
+    if detector == "economic_oracle_lending" or "oracle_lending" in surface_ids or bug_class == "erc4626_collateral_oracle":
+        return "oracle_lending_bad_debt"
+    if detector in {"erc4626_dual_asset_redeem_double_count", "vault_share_donation_inflation"} or "vault_share_accounting" in surface_ids:
+        return "vault_redeem_share_accounting"
+    if detector in {"amm_pair_reserve_desync", "hook_pair_burn_sync", "thin_liquidity_spot_oracle"} or "amm_reserve_dependency" in surface_ids:
+        return "amm_reserve_manipulation"
+    if "bridge_or_proof_domain" in surface_ids:
+        return "bridge_or_proof_domain_binding"
+    return "protocol_group_validation"
+
+
+def _scenario_steps(scenario: str, components: list[dict]) -> list[str]:
+    roles = {str(c.get("role")) for c in components}
+    if scenario == "oracle_lending_bad_debt":
+        return [
+            "Read baseline oracle/exchange-rate output and lending liquidity/health from the resolved group.",
+            "Perturb the mutable oracle/vault/pair component on a fork using donation, reserve skew, or stale price setup.",
+            "Call the borrow/mint/redeem path on the market/controller at the manipulated valuation.",
+            "Assert borrowed value exceeds healthy collateral value or protocol bad debt increases.",
+        ]
+    if scenario == "vault_redeem_share_accounting":
+        return [
+            "Read totalAssets, totalSupply, vault idle balances, and strategy/LP component balances.",
+            "Donate or skew the non-primary asset/LP side, then deposit enough primary asset to own most shares.",
+            "Redeem shares and compare all asset legs paid to the receiver against pre-redeem totalAssets.",
+            "Assert value conservation across primary asset, non-asset leg, and LP position.",
+        ]
+    if scenario == "amm_reserve_manipulation":
+        return [
+            "Read pair reserves, token balances, and any target cached reserve/accounting state.",
+            "Trigger the target path that burns/transfers/skims/syncs the pair or reads spot reserves.",
+            "Swap or redeem against the desynced reserves in the same fork scenario.",
+            "Assert paired-asset drain or reserve/accounting divergence.",
+        ]
+    if scenario == "bridge_or_proof_domain_binding":
+        return [
+            "Read verifier/messenger/receiver addresses and replay/nullifier storage slots.",
+            "Replay the same payload/root/proof with altered domain, count, recipient, or gap-slot data.",
+            "Assert receiver state/value changes only when all source-domain and proof-bound fields match.",
+        ]
+    return [
+        f"Resolved roles available: {', '.join(sorted(roles))}.",
+        "Build the fork action path across the resolved group, then assert value conservation or authorization binding.",
+    ]
+
+
+def _scenario_assertions(scenario: str) -> list[str]:
+    if scenario == "oracle_lending_bad_debt":
+        return ["reported collateral value cannot be moved by an unprivileged fork perturbation", "borrowed value must remain within healthy collateral bounds"]
+    if scenario == "vault_redeem_share_accounting":
+        return ["redeem must not pay the same LP/non-asset value twice", "share burn and asset payout must conserve vault value"]
+    if scenario == "amm_reserve_manipulation":
+        return ["pair reserve sync/skim/burn must not let token logic steal paired reserves", "spot reserve reads must be bounded by TWAP/liquidity guards"]
+    if scenario == "bridge_or_proof_domain_binding":
+        return ["message/proof/nullifier keys must bind source chain, sender, nonce, root, recipient, amount, and count", "gap slots must be constrained or zeroed"]
+    return ["cross-contract state changes must preserve value and authorization invariants"]
 
 
 def generate_and_run(

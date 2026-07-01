@@ -245,6 +245,16 @@ def score_finding(
             "+2 corroborated on the same function by: " + ", ".join(map(str, by))[:120]
         )
 
+    storage_ctx = ev.get("storage_layout") or {}
+    if isinstance(storage_ctx, dict) and (storage_ctx.get("critical_slots") or storage_ctx.get("module_context")):
+        conf += 0.5
+        notes.append("+0.5 storage-layout context maps critical slots/module storage sharing")
+
+    graph_sim = ev.get("graph_sim") or {}
+    if isinstance(graph_sim, dict) and graph_sim.get("components"):
+        conf += 0.5
+        notes.append("+0.5 graph-aware fork scenario generated across resolved protocol components")
+
     # Adversarial refutation (gap #3): an independent skeptic read the code and
     # disproved exploitability -> hard-cap so it cannot reach a critical bucket.
     refutation = ev.get("refutation") or {}

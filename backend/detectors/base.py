@@ -72,6 +72,8 @@ class TargetContext:
     taint: "TaintReport | None" = None
     # Phase 12: per-target cross-contract role/surface graph.
     protocol_graph: dict | None = None
+    # Phase 14: storage/proxy/module layout hints for validation and AI review.
+    storage_layout: dict | None = None
 
     # ------------------------------------------------------------------ #
     def all_source_text(self) -> str:

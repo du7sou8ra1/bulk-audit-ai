@@ -147,3 +147,33 @@ def test_never_initialized_caps_only_when_no_value_and_no_dependents():
     cand.evidence["value_context"] = {"state": "unknown", "signal": "unknown"}
     unknown = score_finding(cand, [])
     assert unknown.classification == Classification.CONFIRMED_CRITICAL
+
+
+def test_storage_and_graph_context_raise_visibility_without_confirming():
+    base = FindingCandidate(
+        detector="economic_oracle_lending",
+        title="oracle controls borrow capacity",
+        description="x",
+        impact_score=8.0,
+        confidence_score=3.0,
+        evidence={"has_access_control": False},
+    )
+    enriched = FindingCandidate(
+        detector="economic_oracle_lending",
+        title="oracle controls borrow capacity",
+        description="x",
+        impact_score=8.0,
+        confidence_score=3.0,
+        evidence={
+            "has_access_control": False,
+            "storage_layout": {"critical_slots": [{"name": "priceOracle"}], "module_context": []},
+            "graph_sim": {"components": [{"role": "target"}, {"role": "oracle"}], "scenario": "oracle_lending_bad_debt"},
+        },
+    )
+
+    base_score = score_finding(base, [])
+    enriched_score = score_finding(enriched, [])
+    assert enriched_score.confidence_score > base_score.confidence_score
+    assert enriched_score.classification == Classification.NEEDS_MORE_INVESTIGATION
+    assert any("storage-layout" in note for note in enriched_score.score_notes)
+    assert any("graph-aware" in note for note in enriched_score.score_notes)

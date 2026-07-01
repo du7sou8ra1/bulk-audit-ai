@@ -48,6 +48,7 @@ from . import poc_generator
 from . import protocol_graph as protocol_graph_mod
 from . import report_writer
 from .ai_reviewer import review_finding
+from . import storage_layout as storage_layout_mod
 from .command_runner import which
 from .invariant_reasoner import run_invariant_reasoner
 from .onchain import OnchainClient
@@ -526,6 +527,45 @@ async def process_target(
              "status": graph_res.status, "summary": graph_res.summary},
         )
 
+    # Phase 14: storage/proxy/module layout hints. Runs after protocol graph so
+    # stored dependencies can be linked to oracle/market/vault/pair roles.
+    tr = _create_toolrun(target_id, "storage-layout")
+    hub.publish(
+        scan_id,
+        {"type": "tool_update", "target_id": target_id, "tool": "storage-layout", "status": "running"},
+    )
+    try:
+        storage_res = await asyncio.to_thread(
+            storage_layout_mod.run_storage_layout, ctx, workspace["base"]
+        )
+        ctx.storage_layout = storage_res.meta
+        tool_outputs["storage-layout"] = {
+            "summary": storage_res.summary,
+            "findings": storage_res.findings,
+            "status": storage_res.status,
+            "meta": storage_res.meta,
+        }
+        _finalize_toolrun(tr.id, storage_res)
+        _log(scan_id, f"[{address}] {storage_res.summary}")
+        hub.publish(
+            scan_id,
+            {"type": "tool_update", "target_id": target_id, "tool": "storage-layout",
+             "status": storage_res.status, "summary": storage_res.summary},
+        )
+    except Exception as exc:
+        logger.warning("storage layout failed for %s: %s", address, exc)
+        ctx.storage_layout = None
+        storage_res = _skip_runner("storage-layout", f"runner crashed: {exc}")
+        storage_res.status = "failed"
+        tool_outputs["storage-layout"] = {
+            "summary": storage_res.summary,
+            "findings": [],
+            "status": storage_res.status,
+            "meta": {"error": str(exc)[:500]},
+        }
+        _finalize_toolrun(tr.id, storage_res)
+        hub.publish(scan_id, {"type": "tool_update", "target_id": target_id, "tool": "storage-layout", "status": storage_res.status, "summary": storage_res.summary})
+
     if _toggle(toggles, "value_context", s.enable_value_context):
         try:
             value_context = await asyncio.to_thread(
@@ -682,6 +722,10 @@ async def process_target(
     if value_context:
         for cand in candidates:
             cand.evidence.setdefault("value_context", value_context)
+    storage_context = storage_layout_mod.compact_storage_context(getattr(ctx, "storage_layout", None))
+    if storage_context:
+        for cand in candidates:
+            cand.evidence.setdefault("storage_layout", storage_context)
 
     sanity_suppressed = apply_candidate_sanity(
         ctx,
@@ -872,6 +916,39 @@ async def process_target(
                         "status": runner.status, "summary": sim.get("note")})
                 score = score_finding(cand, all_tool_findings, profile=profile)  # re-score with confirmation
                 _log(scan_id, f"[{address}] ORACLE MANIPULATION CONFIRMED: {sim.get('note')}")
+
+        # Graph-aware fork context probe: builds a multi-contract scenario from
+        # the protocol graph (target + oracle/vault/market/pair/etc.). It is
+        # validation scaffolding, not a confirmed exploit signal by itself.
+        if (
+            flashsim_on
+            and not suppressed
+            and sim_count < s.max_sims_per_target
+            and flashloan_sim.is_graph_sim_eligible(ctx, cand)
+        ):
+            graph_sim_dir = workspace["foundry"] / f"graph_sim_{i}"
+            _log(scan_id, f"[{address}] graph-aware fork sim plan for {cand.detector}")
+            graph_sim = await asyncio.to_thread(
+                flashloan_sim.generate_graph_aware_simulation,
+                ctx, cand, graph_sim_dir, rpc_url=s.rpc_url, timeout=s.foundry_timeout,
+            )
+            sim_count += 1
+            cand.evidence["graph_sim"] = {
+                "scenario": graph_sim.get("scenario"),
+                "components": graph_sim.get("components"),
+                "plan_path": graph_sim.get("plan_path"),
+                "markdown_path": graph_sim.get("markdown_path"),
+                "runner_status": graph_sim.get("runner_status"),
+                "note": graph_sim.get("note"),
+            }
+            runner = graph_sim.get("runner")
+            if runner is not None:
+                tr = _create_toolrun(target_id, "graph-sim")
+                _finalize_toolrun(tr.id, runner)
+                hub.publish(scan_id, {
+                    "type": "tool_update", "target_id": target_id, "tool": "graph-sim",
+                    "status": runner.status, "summary": graph_sim.get("note")})
+            _log(scan_id, f"[{address}] graph-aware sim: {graph_sim.get('note')}")
 
         packet = evidence_mod.build_ai_packet(ctx, cand, score)
         slug = _finding_slug(cand.detector, i, (cand.affected_functions or [None])[0])
