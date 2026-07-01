@@ -23,6 +23,7 @@ from .bridge_accounting import BridgeAccountingDetector
 from .bytecode_periphery import BytecodePeripheryDetector
 from .corpus_patterns import CorpusPatternDetector
 from .delegatecall import DelegatecallDetector
+from .economic_oracle_lending import EconomicOracleLendingDetector
 from .governance_blast_radius import GovernanceBlastRadiusDetector
 from .oracle_manipulation import OracleManipulationDetector
 from .permit_misuse import PermitMisuseDetector
@@ -216,6 +217,7 @@ ULTRA_DEEP_V2_EXTRA_DETECTORS: list[type[Detector]] = [
     PermissionlessBatchExecutorDetector,
     RfqSignerInventoryMismatchDetector,
     SpotPricedLeverageLiquidationCapDetector,
+    EconomicOracleLendingDetector,
 ]
 
 WEIRD_HUNT_DETECTORS: list[type[Detector]] = [

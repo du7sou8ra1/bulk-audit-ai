@@ -239,3 +239,31 @@ rules:
       include: ["*.sol"]
     patterns:
       - pattern-regex: '(?s)(MAX_?LIQ|liquidations?ThisBlock|liquidations?InBlock|maxLiquidations)[\s\S]{0,5000}function\s+\w*(openLong|leverage|boost|borrow|openPosition)\w*\s*\([^)]*\)[\s\S]{0,1600}(slot0\s*\(|sqrtPriceX96|getCurrentPrice|spotPrice)[\s\S]{0,1600}(debt|borrow|loan|position|margin)'
+
+
+  - id: solidity-economic-oracle-lending-get-underlying-price
+    languages: [generic]
+    severity: ERROR
+    message: "Compound-style getUnderlyingPrice oracle has mutable reporter/anchor state; verify connected lending market cannot create bad debt."
+    paths:
+      include: ["*.sol"]
+    patterns:
+      - pattern-regex: '(?s)function\s+getUnderlyingPrice\s*\([^)]*address[^)]*\)[\s\S]{0,1800}(Comptroller|priceInternal|prices\s*\[|anchor|reporter|failover)'
+
+  - id: solidity-lending-borrow-oracle-coupling
+    languages: [generic]
+    severity: ERROR
+    message: "Borrow/liquidation path consumes oracle/exchange-rate price; verify staleness/deviation/solvency boundary."
+    paths:
+      include: ["*.sol"]
+    patterns:
+      - pattern-regex: '(?s)(getAccountLiquidity|accountLiquidity|shortfall|collateralFactor)[\s\S]{0,2200}(getUnderlyingPrice|convertToAssets|exchangeRate|oracle)[\s\S]{0,2200}(borrow|liquidat|seize)'
+
+  - id: solidity-erc4626-exchange-rate-lending-oracle
+    languages: [generic]
+    severity: ERROR
+    message: "ERC4626/share exchange rate appears to feed collateral pricing; check Edel-style exchange-rate inflation."
+    paths:
+      include: ["*.sol"]
+    patterns:
+      - pattern-regex: '(?s)(borrow|collateral|comptroller|ltv|liquidat)[\s\S]{0,3500}(convertToAssets|previewRedeem|totalAssets\s*\(|totalSupply\s*\(|balanceOf\s*\()[\s\S]{0,1800}(price|oracle|value|assetPrice)'

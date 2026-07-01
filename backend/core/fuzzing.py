@@ -207,6 +207,23 @@ DETECTOR_INVARIANT_TEMPLATES: list[DetectorInvariantTemplate] = [
         strategy="allowance_router",
     ),
     DetectorInvariantTemplate(
+        key="economic_oracle_lending",
+        match_patterns=(
+            "economic.oracle.lending",
+            "getunderlyingprice",
+            "comptroller",
+            "borrow.capacity",
+            "bad.debt",
+            "exchange.rate",
+            "erc4626",
+        ),
+        function_patterns=("getUnderlyingPrice", "getAccountLiquidity", "borrow", "liquidate", "validate", "postPrices", "pokeFailedOverPrice", "convertToAssets"),
+        property_name="oracle/lending solvency boundary",
+        goal="Oracle price or exchange-rate updates must not let an account borrow above conservative collateral value or leave unrecoverable bad debt.",
+        next_assertion="Model an oracle/exchange-rate jump followed by borrow/liquidation, then require account shortfall and protocol bad debt stay within the documented bound.",
+        strategy="oracle_lending",
+    ),
+    DetectorInvariantTemplate(
         key="auth_upgrade_provenance",
         match_patterns=(
             "initialize",
