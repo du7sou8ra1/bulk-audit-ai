@@ -282,6 +282,60 @@ def _cli_benchmark_detectors(
     return 0 if report["passed"] else 1
 
 
+def _cli_benchmark_precision(
+    *,
+    corpus: str | None,
+    profile: str,
+    list_cases: bool,
+    out: str | None,
+) -> int:
+    """False-positive precision benchmark.
+
+    Offline (default): run the deterministic pipeline on safe-code fixtures and
+    assert zero reportable findings. Live (``--corpus <file>``): scan real
+    addresses through the full pipeline (needs RPC + Etherscan keys) and flag any
+    that yield a reportable finding.
+    """
+    from .core import precision_benchmark as pb
+
+    if list_cases:
+        print(json.dumps({"cases": [
+            {"id": c.id, "name": c.name, "chain": c.chain, "reason": c.reason}
+            for c in pb.PRECISION_NEGATIVE_CASES]}, indent=2, sort_keys=True))
+        return 0
+
+    if corpus:
+        cases = pb.load_precision_corpus(corpus)
+        print(f"live precision run over {len(cases)} corpus address(es), profile={profile} ...")
+        scan_ids = asyncio.run(pb.run_live_precision_scans(cases, profile=profile))
+        from .database import SessionLocal
+
+        with SessionLocal() as db:
+            results = pb.validate_live_precision(db, scan_ids, cases)
+        mode = "live"
+    else:
+        results = pb.run_precision_cases(profile=profile)
+        mode = "offline"
+
+    report = pb.precision_report(results)
+    if out:
+        out_path = Path(out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(report, indent=2, sort_keys=True, default=str), encoding="utf-8")
+        print(f"wrote {out_path}")
+
+    print(
+        f"precision benchmark ({mode}) {report['passed_cases']}/{report['total_cases']} clean, "
+        f"{report['total_reportable_false_positives']} reportable false positive(s)"
+    )
+    for r in report["results"]:
+        status = "PASS" if r["passed"] else "FAIL"
+        print(f"- {status} {r['case_id']}: {len(r['reportable_findings'])} reportable")
+        for f in r["reportable_findings"]:
+            print(f"  * {f['detector']} :: {f.get('classification')} {f.get('title', '')}")
+    return 0 if report["failed_cases"] == 0 else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="bulk-audit-ai")
     sub = parser.add_subparsers(dest="command")
@@ -317,6 +371,12 @@ def main(argv: list[str] | None = None) -> int:
     p_det.add_argument("--list-cases", action="store_true", help="print detector fixture case pack as JSON")
     p_det.add_argument("--out", default=None, help="write JSON detector regression report")
 
+    p_prec = sub.add_parser("benchmark-precision", help="false-positive precision benchmark (offline fixtures, or --corpus for a live VPS run)")
+    p_prec.add_argument("--corpus", default=None, help="JSON corpus of addresses to scan live (needs RPC + Etherscan keys); omit for offline inline cases")
+    p_prec.add_argument("--profile", default="ultra-deep-v2")
+    p_prec.add_argument("--list-cases", action="store_true", help="print the offline precision case pack as JSON")
+    p_prec.add_argument("--out", default=None, help="write JSON precision report")
+
     sub.add_parser("serve", help="run the web server (default)")
 
     args = parser.parse_args(argv)
@@ -342,6 +402,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "benchmark-detectors":
         return _cli_benchmark_detectors(
             case_ids=args.case,
+            profile=args.profile,
+            list_cases=args.list_cases,
+            out=args.out,
+        )
+    if args.command == "benchmark-precision":
+        return _cli_benchmark_precision(
+            corpus=args.corpus,
             profile=args.profile,
             list_cases=args.list_cases,
             out=args.out,

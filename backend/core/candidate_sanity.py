@@ -77,11 +77,28 @@ def apply_candidate_sanity(
     *,
     enable_liveness: bool = True,
     enable_binding_gate: bool = True,
+    enable_chain_gate: bool = True,
 ) -> int:
     """Mutate candidates with ``evidence['suppressed']`` for deterministic FPs.
 
     Returns the number of candidates suppressed by this pass.
     """
+    # Target-level attribution gate: if the address has NO code on the scanned
+    # chain, or the RPC is reporting a different chain than we are scanning, every
+    # finding is misattributed (the Base-scan-hits-mainnet-RPC class). Suppress the
+    # whole target's candidates before any per-candidate work. Defensive: only fires
+    # on a definitive signal from an available RPC; unknown never suppresses.
+    if enable_chain_gate:
+        chain_reason = _target_attribution_reason(ctx)
+        if chain_reason:
+            hit = 0
+            for cand in candidates:
+                if (cand.evidence or {}).get("suppressed"):
+                    continue
+                _suppress(cand, chain_reason, concrete=True, pattern_class="chain_misattribution")
+                hit += 1
+            return hit
+
     entries = _function_entries(ctx)
     abi_names = _abi_function_names(ctx)
     suppressed = 0
@@ -103,12 +120,76 @@ def apply_candidate_sanity(
     return suppressed
 
 
+_EMPTY_CODE = {"0x", "0x0", "0x00", ""}
+
+
+def _target_attribution_reason(ctx: TargetContext) -> str:
+    """Return a suppression reason if the whole target is misattributed / codeless.
+
+    Two definitive, misconfiguration-grade signals (each read-only, defensive):
+      1. RPC chain mismatch — the node's chainid != the chain we are scanning, so
+         every on-chain read is against the wrong chain (Base scan resolving against
+         a fallback mainnet RPC). ``get_code`` then returns the WRONG chain's bytecode
+         and looks non-empty, so this must be checked BEFORE the codeless check.
+      2. Codeless target — ``eth_getCode`` is empty on the correctly-scoped chain, so
+         the address is an EOA or simply not deployed here; no on-chain vuln exists.
+
+    Never fires on unknown (no RPC, read failure, or a fake client missing the
+    methods) — unknown must not suppress real leads.
+    """
+    onchain = getattr(ctx, "onchain", None)
+    if onchain is None or not getattr(onchain, "available", False):
+        return ""
+    chain = getattr(ctx, "chain", None) or "?"
+
+    mismatch_fn = getattr(onchain, "chain_mismatch", None)
+    if callable(mismatch_fn):
+        try:
+            mismatch = mismatch_fn()
+        except Exception:
+            mismatch = None
+        if mismatch is True:
+            expected = getattr(onchain, "expected_chain_id", "?")
+            live_fn = getattr(onchain, "live_chain_id", None)
+            live = live_fn() if callable(live_fn) else "?"
+            return (
+                f"RPC chain mismatch: the node reports chainid {live} but the scan targets "
+                f"'{chain}' (chainid {expected}); on-chain reads are misattributed. "
+                f"Set RPC_URL_{str(chain).upper().replace('-', '_')} to a {chain} RPC."
+            )
+
+    # Prefer the bytecode the scanner already fetched for this target (one fewer
+    # RPC per target); fall back to a fresh read only when it was not captured.
+    code = getattr(ctx, "bytecode", None)
+    if code is None:
+        get_code = getattr(onchain, "get_code", None)
+        if callable(get_code):
+            try:
+                code = get_code(ctx.address)
+            except Exception:
+                code = None
+    if isinstance(code, str) and code.strip().lower() in _EMPTY_CODE:
+        return (
+            f"no contract code at {ctx.address} on chain '{chain}' (eth_getCode is empty) — "
+            "the address is an EOA or is not deployed on this chain, so any finding here is "
+            "misattributed (e.g. an L1 token address scanned against an L2)"
+        )
+    return ""
+
+
 def _suppression_reason(
     ctx: TargetContext,
     cand: FindingCandidate,
     entries: dict[str, list[FunctionEntry]],
     abi_names: set[str],
 ) -> str:
+    # Proxy-implementation-specific detectors carry the `initializer` modifier BY
+    # DESIGN — the bug is the MISSING _disableInitializers() / immutable-in-impl, not
+    # an unguarded initializer — so the generic init-guard / ABI gates below would
+    # wrongly suppress them. Their own gates are already tight.
+    if cand.detector in ("uninitialized_implementation", "constructor_state_in_proxy_impl"):
+        return ""
+
     fn = _candidate_function(cand)
     if not fn:
         return ""

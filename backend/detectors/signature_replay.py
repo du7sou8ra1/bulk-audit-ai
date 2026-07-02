@@ -26,6 +26,24 @@ _SIGNER_CHECK_RE = re.compile(r"==\s*\w*[Ss]igner|signer\s*==|!=\s*address\(0\)|
 _RAW_ECRECOVER_RE = re.compile(r"\becrecover\s*\(", re.IGNORECASE)
 _OZ_SIG_RE = re.compile(r"ECDSA\s*\.\s*(recover|tryRecover)\s*\(|SignatureChecker", re.IGNORECASE)
 _ZERO_CHECK_RE = re.compile(r"address\s*\(\s*0\s*\)|address\s*\(\s*0x0+\s*\)", re.IGNORECASE)
+# SIG-EIP712-CACHED-CHAINID: a domain separator cached at deploy (immutable / in the
+# constructor) from block.chainid and then used directly when verifying signatures,
+# with NO runtime recompute if the chain forks. After a hard fork the cached separator
+# no longer matches block.chainid, so signatures become replayable across the fork.
+# This is the exact issue OZ's EIP712 guards with its `block.chainid == _cachedChainId`
+# recheck (falling back to `_buildDomainSeparator()`), so the presence of that recompute
+# guard is what distinguishes safe (OZ) code from the vulnerable hand-rolled cache.
+_CACHED_DS_RE = re.compile(
+    r"immutable\b[^;\n]*(?:DOMAIN_SEPARATOR|domainSeparator)|"
+    r"INITIAL_DOMAIN_SEPARATOR|_CACHED_DOMAIN_SEPARATOR|_cachedDomainSeparator",
+    re.IGNORECASE,
+)
+_CHAINID_RE = re.compile(r"block\.chainid", re.IGNORECASE)
+_CHAINID_RECOMPUTE_RE = re.compile(
+    r"block\.chainid\s*[=!]=|[=!]=\s*block\.chainid|"
+    r"_domainSeparatorV4\s*\(|_buildDomainSeparator\s*\(",
+    re.IGNORECASE,
+)
 
 
 class SignatureReplayDetector(Detector):
@@ -81,6 +99,25 @@ class SignatureReplayDetector(Detector):
                         impact=8.0, conf=7.0, bug="signature",
                         tests=["Submit a malformed signature so ecrecover returns address(0); check the path it unlocks",
                                "Confirm require(recovered != address(0)) AND == expected signer"]))
+        # Contract-level: EIP-712 domain separator cached at deploy from block.chainid and
+        # never recomputed on a chain fork -> cross-fork signature replay. Gated on the
+        # contract actually verifying signatures (top-of-run _SIG_RE check) and stays silent
+        # when the OZ recompute guard (block.chainid == cached / _buildDomainSeparator) exists.
+        if (_CACHED_DS_RE.search(text) and _CHAINID_RE.search(text)
+                and not _CHAINID_RECOMPUTE_RE.search(text)):
+            findings.append(self._c(
+                "<domain-separator>", next(iter(ctx.source_files), ""), text,
+                rule_id="eip712_cached_chainid_replay", bug="signature",
+                title="EIP-712 domain separator cached with chainid, no fork recompute (cross-fork replay)",
+                desc=("The EIP-712 domain separator is cached at deploy (immutable / constructor) "
+                      "from `block.chainid` and reused directly when verifying signatures, with no "
+                      "runtime recompute if the chain forks. After a hard fork the cached separator "
+                      "no longer matches `block.chainid`, so signatures signed for one chain are "
+                      "replayable on the other. OZ's EIP712 guards this with a "
+                      "`block.chainid == _cachedChainId` recheck that rebuilds the separator."),
+                impact=7.0, conf=5.0,
+                tests=["Confirm the digest rebuilds the domain separator when block.chainid != the cached chainid",
+                       "Replay a pre-fork signature on the post-fork chain; expect it to be rejected"]))
         return findings
 
     @staticmethod

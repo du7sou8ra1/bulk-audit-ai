@@ -2,7 +2,35 @@
 from __future__ import annotations
 
 from .access_control import AccessControlDetector
+from .account_abstraction import (
+    PaymasterUserOpBindingDetector,
+    SessionKeyUnscopedDetector,
+    UserOpChainIdReplayDetector,
+    ValidateUserOpMissingPrefundDetector,
+)
+from .amm_extra import ClmmRoundingAsymmetryDetector
+from .analyzer_findings import AnalyzerFindingsDetector
 from .arbitrary_call import ArbitraryCallDetector
+from .bridge_extra import MessageReplayNoNonceDetector, RetryDomainBindingDetector
+from .claim_replay_extra import ClaimReplayNoMarkerDetector
+from .defi_hygiene import MaxApproveMutableSpenderDetector, SwapSlippageDeadlineDetector
+from .lending_accrual import InterestAccrualAsymmetryDetector
+from .oracle_extra import TwapZeroWindowDetector
+from .reward_math import RewardPerTokenZeroSupplyDetector
+from .defi_lending_extra import (
+    BadDebtNoSocializationDetector,
+    BorrowCapNotEnforcedDetector,
+    HealthFactorRoundingDetector,
+)
+from .dos_patterns import PushPaymentDosDetector
+from .hybrid_token import Erc404LedgerDesyncDetector
+from .signature_extra import PermitMissingDeadlineDetector
+from .proxy_impl_safety import (
+    ConstructorStateInProxyImplDetector,
+    MissingStorageGapDetector,
+    UninitializedImplementationDetector,
+)
+from .staking_extra import EmergencyWithdrawStaleDebtDetector
 from .exploit_2026 import (
     AsymmetricSafeMathDetector,
     CrossChainTrustDetector,
@@ -27,6 +55,7 @@ from .economic_oracle_lending import EconomicOracleLendingDetector
 from .governance_blast_radius import GovernanceBlastRadiusDetector
 from .oracle_manipulation import OracleManipulationDetector
 from .permit_misuse import PermitMisuseDetector
+from .precision_loss import DivideBeforeMultiplyDetector
 from .privacy_pool import PrivacyPoolDetector
 from .proxy_upgrade import ProxyUpgradeDetector
 from .reentrancy import ReentrancyDetector
@@ -36,6 +65,8 @@ from .flashloan_governance import FlashloanGovernanceDetector
 from .time_logic import TimeLogicDetector
 from .timelock_roles import TimelockRolesDetector
 from .token_logic import TokenLogicDetector
+from .unsafe_cast import UnsafeDowncastDetector
+from .weak_randomness import WeakRandomnessDetector
 from .zk_verifier import ZkVerifierDetector
 from .weird_hunt import (
     AccumulatorZeroSupplyDetector,
@@ -128,11 +159,11 @@ ATTACK_CLASS_DETECTORS: list[type[Detector]] = [
     FlashloanGovernanceDetector,  # Beanstalk (spot-power vote + same-tx exec) (v0.5)
 ]
 
-# All known detectors (implemented + remaining stubs).
+# All known detectors. delegatecall (Furucombo attacker-settable-impl class) and
+# privacy_pool (mixer nullifier/root/proof-binding invariants) are fully implemented.
 ALL_DETECTORS: list[type[Detector]] = [
     *MVP_DETECTORS,
     *ATTACK_CLASS_DETECTORS,
-    # remaining stubs (return no findings yet):
     DelegatecallDetector,
     PrivacyPoolDetector,
 ]
@@ -166,6 +197,43 @@ FULL_DETECTORS: list[type[Detector]] = [
     *EXPLOIT_2026_DETECTORS,
     DelegatecallDetector,
     PrivacyPoolDetector,
+    # Unsafe narrowing downcast (uintN(x) silent truncation) — a lead-level class
+    # with no prior coverage.
+    UnsafeDowncastDetector,
+    # Divide-before-multiply precision loss (native cover for Slither's check).
+    DivideBeforeMultiplyDetector,
+    # Weak block-derived randomness (predictable PRNG) — new lead-level coverage.
+    WeakRandomnessDetector,
+    # Gap-hunt wave (probed uncovered by the live engine; tight marker gates):
+    UninitializedImplementationDetector,      # UUPS impl missing _disableInitializers (critical)
+    ConstructorStateInProxyImplDetector,      # immutable/constructor state behind a proxy
+    SwapSlippageDeadlineDetector,             # minOut==0 / deadline==block.timestamp value-literals
+    MaxApproveMutableSpenderDetector,         # infinite approve to a setter-mutable spender
+    Erc404LedgerDesyncDetector,               # ERC-404/DN-404 hybrid ledger desync
+    PaymasterUserOpBindingDetector,           # 4337 paymaster sig omits callData
+    UserOpChainIdReplayDetector,              # 4337 validateUserOp local digest w/o chainid
+    # Gap-hunt backlog batch 1 (low-FP standalone):
+    ValidateUserOpMissingPrefundDetector,     # 4337 account never repays prefund
+    EmergencyWithdrawStaleDebtDetector,       # emergencyWithdraw leaves stale reward/global accounting
+    BorrowCapNotEnforcedDetector,             # cap declared but not enforced in borrow path
+    BadDebtNoSocializationDetector,           # underwater liquidation with no deficit sink
+    MissingStorageGapDetector,                # upgradeable base with no __gap
+    # Gap-hunt backlog batch 2 (medium-FP lead-only, tight gates):
+    MessageReplayNoNonceDetector,             # bridge receiver mints without replay marker
+    RetryDomainBindingDetector,               # retry/compose trusts caller origin
+    SessionKeyUnscopedDetector,               # 4337 session key not scoped to target/selector
+    PermitMissingDeadlineDetector,            # signed deadline never enforced
+    HealthFactorRoundingDetector,             # collateral round-up vs debt (favors borrower)
+    ClmmRoundingAsymmetryDetector,            # payout round-up vs deposit round-down
+    PushPaymentDosDetector,                   # push payment to prev actor bricks critical path
+    # Gap-hunt backlog batch 3 (new standalone; cover shapes existing detectors miss):
+    InterestAccrualAsymmetryDetector,         # mutator skips accrual a sibling does
+    RewardPerTokenZeroSupplyDetector,         # Synthetix rewardPerToken div0
+    TwapZeroWindowDetector,                    # TWAP window 0 via constant-indirection
+    ClaimReplayNoMarkerDetector,              # helper-verified claim with no consumed marker
+    # Promotes Slither/Mythril/Semgrep findings to first-class candidates (a bug
+    # only the analyzers caught is otherwise discarded). In every profile.
+    AnalyzerFindingsDetector,
 ]
 
 # New detectors that run ONLY under ultra-deep (deep stays frozen). Filled as the
