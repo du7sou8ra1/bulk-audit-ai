@@ -104,6 +104,38 @@ class OnchainClient:
         return to_checksum_address(address)
 
     # ------------------------------------------------------------------ #
+    # Chain-attribution guard (Base-scan-hits-mainnet-RPC misconfig).
+    # ------------------------------------------------------------------ #
+    @property
+    def expected_chain_id(self) -> int:
+        """The numeric chainid the scan intends to target (from the chain name)."""
+        return get_settings().etherscan_chain_id(self.chain)
+
+    def live_chain_id(self) -> int | None:
+        """The chainid the configured RPC node actually reports (None if unknown)."""
+        if not self.w3:
+            return None
+        try:
+            return int(self.w3.eth.chain_id)
+        except Exception as exc:
+            logger.debug("chain_id read failed: %s", exc)
+            return None
+
+    def chain_mismatch(self) -> bool | None:
+        """True if the RPC node's chainid != the chain being scanned.
+
+        ``rpc_url_for`` falls back to the default RPC when ``RPC_URL_<CHAIN>`` is
+        unset, so scanning e.g. Base with only a mainnet RPC configured makes every
+        read (get_code / balances / eth_call) resolve against MAINNET. Findings
+        derived from those reads are then attributed to the wrong chain. Returns
+        None when unknown (no RPC / read failed) — unknown must never suppress.
+        """
+        live = self.live_chain_id()
+        if live is None:
+            return None
+        return live != self.expected_chain_id
+
+    # ------------------------------------------------------------------ #
     # Primitive reads
     # ------------------------------------------------------------------ #
     def get_code(self, address: str) -> str | None:

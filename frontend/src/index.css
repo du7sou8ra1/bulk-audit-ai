@@ -2,11 +2,179 @@
 @tailwind components;
 @tailwind utilities;
 
-@layer base {
-  :root {
-    color-scheme: dark;
-  }
+/* ---------------------------------------------------------------------------
+   Themes. Each var is a space-separated "R G B" triple consumed by Tailwind via
+   rgb(var(--x) / <alpha-value>) (see tailwind.config.js). Swap [data-theme] on
+   <html> (theme.ts) to re-theme the whole app.
 
+   Role of each slate step:
+     950 page bg · 900 panel/card · 800 border · 700 strong border/hover ·
+     600 faint · 500 placeholder · 400 muted text · 300 secondary text ·
+     200 body text · 100 headings · 50 brightest
+   --------------------------------------------------------------------------- */
+
+/* :root == Dark (default, no-JS fallback and data-theme="dark") */
+:root {
+  color-scheme: dark;
+  --c-slate-950: 2 6 23;
+  --c-slate-900: 15 23 42;
+  --c-slate-800: 30 41 59;
+  --c-slate-700: 51 65 85;
+  --c-slate-600: 71 85 105;
+  --c-slate-500: 100 116 139;
+  --c-slate-400: 148 163 184;
+  --c-slate-300: 203 213 225;
+  --c-slate-200: 226 232 240;
+  --c-slate-100: 241 245 249;
+  --c-slate-50: 248 250 252;
+  --c-accent-700: 4 120 87;
+  --c-accent-600: 5 150 105;
+  --c-accent-500: 16 185 129;
+  --c-accent-400: 52 211 153;
+  --c-accent-fg: 255 255 255;
+}
+
+[data-theme='light'] {
+  color-scheme: light;
+  --c-slate-950: 248 250 252;
+  --c-slate-900: 255 255 255;
+  --c-slate-800: 226 232 240;
+  --c-slate-700: 203 213 225;
+  --c-slate-600: 148 163 184;
+  --c-slate-500: 100 116 139;
+  --c-slate-400: 71 85 105;
+  --c-slate-300: 51 65 85;
+  --c-slate-200: 30 41 59;
+  --c-slate-100: 15 23 42;
+  --c-slate-50: 2 6 23;
+  --c-accent-700: 4 120 87;
+  --c-accent-600: 5 150 105;
+  --c-accent-500: 16 185 129;
+  --c-accent-400: 4 120 87;
+  --c-accent-fg: 255 255 255;
+}
+
+[data-theme='dracula'] {
+  color-scheme: dark;
+  --c-slate-950: 30 31 40;
+  --c-slate-900: 40 42 54;
+  --c-slate-800: 52 55 70;
+  --c-slate-700: 68 71 90;
+  --c-slate-600: 88 91 112;
+  --c-slate-500: 98 114 164;
+  --c-slate-400: 149 158 197;
+  --c-slate-300: 190 196 220;
+  --c-slate-200: 224 224 236;
+  --c-slate-100: 248 248 242;
+  --c-slate-50: 255 255 255;
+  --c-accent-700: 124 92 196;
+  --c-accent-600: 155 109 224;
+  --c-accent-500: 189 147 249;
+  --c-accent-400: 209 173 255;
+  --c-accent-fg: 255 255 255;
+}
+
+[data-theme='nord'] {
+  color-scheme: dark;
+  --c-slate-950: 36 41 51;
+  --c-slate-900: 46 52 64;
+  --c-slate-800: 59 66 82;
+  --c-slate-700: 67 76 94;
+  --c-slate-600: 76 86 106;
+  --c-slate-500: 97 110 136;
+  --c-slate-400: 138 148 167;
+  --c-slate-300: 184 192 207;
+  --c-slate-200: 216 222 233;
+  --c-slate-100: 229 233 240;
+  --c-slate-50: 236 239 244;
+  --c-accent-700: 94 129 172;
+  --c-accent-600: 129 161 193;
+  --c-accent-500: 136 192 208;
+  --c-accent-400: 143 188 187;
+  --c-accent-fg: 46 52 64;
+}
+
+[data-theme='monokai'] {
+  color-scheme: dark;
+  --c-slate-950: 30 31 28;
+  --c-slate-900: 39 40 34;
+  --c-slate-800: 62 61 50;
+  --c-slate-700: 73 72 62;
+  --c-slate-600: 90 90 78;
+  --c-slate-500: 117 113 94;
+  --c-slate-400: 165 159 133;
+  --c-slate-300: 206 200 176;
+  --c-slate-200: 232 230 216;
+  --c-slate-100: 248 248 242;
+  --c-slate-50: 255 255 255;
+  --c-accent-700: 111 158 18;
+  --c-accent-600: 134 184 31;
+  --c-accent-500: 166 226 46;
+  --c-accent-400: 195 240 79;
+  --c-accent-fg: 30 31 28;
+}
+
+[data-theme='solarized-dark'] {
+  color-scheme: dark;
+  --c-slate-950: 0 30 38;
+  --c-slate-900: 0 43 54;
+  --c-slate-800: 7 54 66;
+  --c-slate-700: 30 66 77;
+  --c-slate-600: 88 110 117;
+  --c-slate-500: 101 123 131;
+  --c-slate-400: 131 148 150;
+  --c-slate-300: 147 161 161;
+  --c-slate-200: 190 197 190;
+  --c-slate-100: 238 232 213;
+  --c-slate-50: 253 246 227;
+  --c-accent-700: 31 106 160;
+  --c-accent-600: 38 139 210;
+  --c-accent-500: 42 161 152;
+  --c-accent-400: 88 176 220;
+  --c-accent-fg: 253 246 227;
+}
+
+[data-theme='github-light'] {
+  color-scheme: light;
+  --c-slate-950: 246 248 250;
+  --c-slate-900: 255 255 255;
+  --c-slate-800: 208 215 222;
+  --c-slate-700: 175 184 193;
+  --c-slate-600: 140 149 159;
+  --c-slate-500: 110 119 129;
+  --c-slate-400: 87 96 106;
+  --c-slate-300: 55 62 71;
+  --c-slate-200: 36 41 47;
+  --c-slate-100: 31 35 40;
+  --c-slate-50: 5 10 15;
+  --c-accent-700: 8 105 178;
+  --c-accent-600: 9 105 218;
+  --c-accent-500: 31 136 229;
+  --c-accent-400: 9 105 218;
+  --c-accent-fg: 255 255 255;
+}
+
+[data-theme='gruvbox-dark'] {
+  color-scheme: dark;
+  --c-slate-950: 29 32 33;
+  --c-slate-900: 40 40 40;
+  --c-slate-800: 60 56 54;
+  --c-slate-700: 80 73 69;
+  --c-slate-600: 102 92 84;
+  --c-slate-500: 146 131 116;
+  --c-slate-400: 168 153 132;
+  --c-slate-300: 189 174 147;
+  --c-slate-200: 213 196 161;
+  --c-slate-100: 235 219 178;
+  --c-slate-50: 251 241 199;
+  --c-accent-700: 175 88 12;
+  --c-accent-600: 214 93 14;
+  --c-accent-500: 254 128 25;
+  --c-accent-400: 254 149 62;
+  --c-accent-fg: 40 40 40;
+}
+
+@layer base {
   html,
   body,
   #root {
@@ -52,7 +220,7 @@
   }
 
   .btn-primary {
-    @apply btn bg-emerald-600 text-white hover:bg-emerald-500;
+    @apply btn bg-emerald-600 text-accentfg hover:bg-emerald-500;
   }
 
   .btn-secondary {

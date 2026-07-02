@@ -5,6 +5,18 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>BulkAuditAI</title>
     <meta name="description" content="Local smart-contract bulk-audit dashboard for defensive bug-bounty triage" />
+    <!-- Apply the saved theme before first paint to avoid a flash of the default. -->
+    <script>
+      (function () {
+        try {
+          var valid = ['dark','light','dracula','nord','monokai','solarized-dark','github-light','gruvbox-dark'];
+          var t = localStorage.getItem('bulkauditai-theme');
+          document.documentElement.setAttribute('data-theme', valid.indexOf(t) >= 0 ? t : 'dark');
+        } catch (e) {
+          document.documentElement.setAttribute('data-theme', 'dark');
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

@@ -100,3 +100,66 @@ def test_oz_ecdsa_recover_silent():
            "function claim(bytes32 d, bytes calldata sig) external { "
            "address s = ECDSA.recover(d, sig); require(s == owner); } }")
     assert "ecrecover_no_zero_check" not in _sig(src)
+
+
+# ---- SIG-EIP712-CACHED-CHAINID (cross-fork replay) ----
+def test_eip712_cached_chainid_replay_fires():
+    # Domain separator cached at deploy from block.chainid, used directly at verify
+    # time, with NO recompute guard -> replayable across a chain fork.
+    src = """contract Vault {
+  bytes32 public immutable DOMAIN_SEPARATOR;
+  mapping(address => uint256) public nonces;
+  constructor() {
+    DOMAIN_SEPARATOR = keccak256(abi.encode(
+      keccak256("EIP712Domain(string name,uint256 chainId,address verifyingContract)"),
+      block.chainid, address(this)));
+  }
+  function permit(address owner, bytes32 structHash, uint8 v, bytes32 r, bytes32 s) external {
+    bytes32 digest = keccak256(abi.encodePacked("\\x19\\x01", DOMAIN_SEPARATOR, structHash));
+    address rec = ecrecover(digest, v, r, s);
+    require(rec == owner, "bad sig");
+    nonces[owner]++;
+  }
+}"""
+    assert "eip712_cached_chainid_replay" in _sig(src)
+
+
+def test_eip712_oz_recompute_guard_silent():
+    # OZ-style: cached separator but a `block.chainid == _cachedChainId` recheck that
+    # rebuilds on a fork -> NOT vulnerable, must stay silent.
+    src = """contract Safe {
+  bytes32 private immutable _cachedDomainSeparator;
+  uint256 private immutable _cachedChainId;
+  constructor() {
+    _cachedChainId = block.chainid;
+    _cachedDomainSeparator = _buildDomainSeparator();
+  }
+  function _domainSeparatorV4() internal view returns (bytes32) {
+    if (block.chainid == _cachedChainId) return _cachedDomainSeparator;
+    return _buildDomainSeparator();
+  }
+  function _buildDomainSeparator() private view returns (bytes32) {
+    return keccak256(abi.encode(block.chainid, address(this)));
+  }
+  function permit(bytes32 structHash, bytes calldata sig) external view {
+    bytes32 digest = keccak256(abi.encodePacked("\\x19\\x01", _domainSeparatorV4(), structHash));
+    address rec = ECDSA.recover(digest, sig);
+    require(rec == msg.sender);
+  }
+}"""
+    assert "eip712_cached_chainid_replay" not in _sig(src)
+
+
+def test_eip712_fresh_recompute_silent():
+    # No caching at all: separator rebuilt fresh (with block.chainid) each verify -> safe.
+    src = """contract Fresh {
+  function _domainSeparator() internal view returns (bytes32) {
+    return keccak256(abi.encode(block.chainid, address(this)));
+  }
+  function claim(bytes32 h, uint8 v, bytes32 r, bytes32 s, address owner) external view {
+    bytes32 digest = keccak256(abi.encodePacked("\\x19\\x01", _domainSeparator(), h));
+    address rec = ecrecover(digest, v, r, s);
+    require(rec != address(0) && rec == owner);
+  }
+}"""
+    assert "eip712_cached_chainid_replay" not in _sig(src)

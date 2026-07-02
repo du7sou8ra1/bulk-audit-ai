@@ -14,6 +14,7 @@ _TOOLS: list[tuple[str, list[str], list[list[str]]]] = [
     ("slither", ["slither"], [["slither", "--version"]]),
     ("mythril", ["myth", "mythril"], [["myth", "version"], ["myth", "--version"]]),
     ("semgrep", ["semgrep"], [["semgrep", "--version"]]),
+    ("aderyn", ["aderyn"], [["aderyn", "--version"]]),
     ("forge", ["forge"], [["forge", "--version"]]),
     ("cast", ["cast"], [["cast", "--version"]]),
     ("anvil", ["anvil"], [["anvil", "--version"]]),
@@ -27,7 +28,7 @@ _TOOLS: list[tuple[str, list[str], list[list[str]]]] = [
 ]
 
 # Tools that are core vs optional (affects the warning text).
-_OPTIONAL = {"anvil", "solc", "echidna", "medusa", "halmos"}
+_OPTIONAL = {"anvil", "solc", "echidna", "medusa", "halmos", "aderyn"}
 
 
 def _first_line(text: str) -> str:

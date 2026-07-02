@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import re
 
-from .access_control import _INLINE_AUTH_RE  # shared inline body-guard recognizer
+from .access_control import _INLINE_AUTH_RE, _guard_modifiers  # shared guard recognizers
 from .base import (
     Detector,
     FindingCandidate,
@@ -55,12 +55,21 @@ class ArithmeticLogicDetector(Detector):
 
     def run(self, ctx: TargetContext) -> list[FindingCandidate]:
         findings: list[FindingCandidate] = []
+        # Custom guard modifiers (e.g. onlyBridge / onlyRevestController) whose body
+        # performs an auth check — resolved once so mint/burn carrying them are not
+        # flagged "no access control". Parity with access_control's resolver; this
+        # only relaxes the mint/burn gate (fewer FPs), never adds findings.
+        guard_mods = _guard_modifiers(ctx.all_source_text())
         for path, source in ctx.source_files.items():
             if not source:
                 continue
             for fname, _params, tail, body in iter_function_bodies(source):
                 lname = fname.lower()
-                guarded = header_has_access_control(tail) or bool(_INLINE_AUTH_RE.search(body))
+                guarded = (
+                    header_has_access_control(tail)
+                    or bool(_INLINE_AUTH_RE.search(body))
+                    or any(re.search(r"\b" + re.escape(gm) + r"\b", tail) for gm in guard_mods)
+                )
                 ext = re.search(r"\b(public|external)\b", tail) is not None
 
                 # 1) unchecked arithmetic with real operations (skip audited math libs)

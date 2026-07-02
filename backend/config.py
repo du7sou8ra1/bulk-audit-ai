@@ -49,6 +49,7 @@ class Settings(BaseSettings):
     enable_slither: bool = Field(default=True, alias="ENABLE_SLITHER")
     enable_mythril: bool = Field(default=True, alias="ENABLE_MYTHRIL")
     enable_semgrep: bool = Field(default=True, alias="ENABLE_SEMGREP")
+    enable_aderyn: bool = Field(default=True, alias="ENABLE_ADERYN")
     enable_foundry: bool = Field(default=False, alias="ENABLE_FOUNDRY")
     enable_fuzzing: bool = Field(default=False, alias="ENABLE_FUZZING")
     enable_bytecode_intel: bool = Field(default=True, alias="ENABLE_BYTECODE_INTEL")
@@ -60,6 +61,8 @@ class Settings(BaseSettings):
     enable_sourcify: bool = Field(default=True, alias="ENABLE_SOURCIFY")
     enable_value_context: bool = Field(default=True, alias="ENABLE_VALUE_CONTEXT")
     enable_sanity_liveness: bool = Field(default=True, alias="ENABLE_SANITY_LIVENESS")
+    enable_chain_liveness: bool = Field(default=True, alias="ENABLE_CHAIN_LIVENESS")
+    enable_analyzer_findings: bool = Field(default=True, alias="ENABLE_ANALYZER_FINDINGS")
     enable_refuter_precision_rules: bool = Field(default=True, alias="ENABLE_REFUTER_PRECISION_RULES")
     enable_binding_hard_gate: bool = Field(default=True, alias="ENABLE_BINDING_HARD_GATE")
     enable_critical_value_gate: bool = Field(default=True, alias="ENABLE_CRITICAL_VALUE_GATE")
@@ -89,6 +92,7 @@ class Settings(BaseSettings):
     mythril_timeout: int = Field(default=90, alias="MYTHRIL_TIMEOUT")
     slither_timeout: int = Field(default=180, alias="SLITHER_TIMEOUT")
     semgrep_timeout: int = Field(default=120, alias="SEMGREP_TIMEOUT")
+    aderyn_timeout: int = Field(default=240, alias="ADERYN_TIMEOUT")
     foundry_timeout: int = Field(default=300, alias="FOUNDRY_TIMEOUT")
     fuzz_timeout: int = Field(default=180, alias="FUZZ_TIMEOUT")
 
@@ -175,6 +179,7 @@ def masked_settings() -> dict:
             "slither": s.enable_slither,
             "mythril": s.enable_mythril,
             "semgrep": s.enable_semgrep,
+            "aderyn": s.enable_aderyn,
             "foundry": s.enable_foundry,
             "fuzzing": s.enable_fuzzing,
             "bytecode_intel": s.enable_bytecode_intel,
@@ -186,6 +191,8 @@ def masked_settings() -> dict:
             "flashloan_sim": s.enable_flashloan_sim,
             "value_context": s.enable_value_context,
             "sanity_liveness": s.enable_sanity_liveness,
+            "chain_liveness": s.enable_chain_liveness,
+            "analyzer_findings": s.enable_analyzer_findings,
             "refuter_precision_rules": s.enable_refuter_precision_rules,
             "binding_hard_gate": s.enable_binding_hard_gate,
             "critical_value_gate": s.enable_critical_value_gate,

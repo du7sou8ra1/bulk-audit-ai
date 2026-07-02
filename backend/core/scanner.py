@@ -199,6 +199,7 @@ async def run_scan_pipeline(scan_id: int, mgr: ScanManager) -> None:
         toggles = dict(scan.toggles or {})
 
     hub.publish(scan_id, {"type": "scan_update", "status": "running"})
+    _chain_preflight(scan_id, chain)
 
     target_sema = asyncio.Semaphore(max(1, s.max_parallel_targets))
 
@@ -295,6 +296,50 @@ def _set_target_status(scan_id: int, target_id: int, status: str, **extra) -> No
         scan_id,
         {"type": "target_update", "target_id": target_id, "address": addr, "status": status, **extra},
     )
+
+
+def chain_preflight_warning(chain: str, onchain) -> str | None:
+    """Return a warning if the RPC node is not on the scanned chain, else None.
+
+    Pure/testable core of the scan preflight. The Base-scan-hits-mainnet-RPC
+    misconfiguration (``rpc_url_for`` falling back to the default RPC when
+    ``RPC_URL_<CHAIN>`` is unset) silently reads the WRONG chain and misattributes
+    L1 bytecode to L2 addresses — the batch-130 root cause. Unknown (no RPC / read
+    failed / not a mismatch) returns None.
+    """
+    if not getattr(onchain, "available", False):
+        return None
+    mismatch_fn = getattr(onchain, "chain_mismatch", None)
+    if not callable(mismatch_fn):
+        return None
+    try:
+        mismatch = mismatch_fn()
+    except Exception:
+        return None
+    if mismatch is not True:
+        return None
+    expected = getattr(onchain, "expected_chain_id", "?")
+    live_fn = getattr(onchain, "live_chain_id", None)
+    live = live_fn() if callable(live_fn) else "?"
+    env = f"RPC_URL_{str(chain).upper().replace('-', '_')}"
+    return (
+        f"CHAIN MISMATCH: scanning '{chain}' (chainid {expected}) but the RPC node reports "
+        f"chainid {live}. Every on-chain read is against the WRONG chain, so findings are "
+        f"misattributed and will be suppressed. Set {env} to a real {chain} RPC before scanning."
+    )
+
+
+def _chain_preflight(scan_id: int, chain: str) -> None:
+    """Emit a loud, scan-level warning when the RPC is on the wrong chain."""
+    try:
+        onchain = OnchainClient(chain=chain)
+    except Exception:
+        return
+    msg = chain_preflight_warning(chain, onchain)
+    if msg:
+        _log(scan_id, f"[preflight] {msg}")
+        logger.warning("scan %s: %s", scan_id, msg)
+        hub.publish(scan_id, {"type": "scan_warning", "level": "error", "message": msg})
 
 
 def _log(scan_id: int, message: str) -> None:
@@ -424,6 +469,12 @@ async def process_target(
     if _toggle(toggles, "mythril", s.enable_mythril):
         await _run_tool(
             scan_id, target_id, "mythril", tool_outputs, workspace,
+            have_source, main_source, tool_bytecode, solc_version,
+            evm_version, optimizer_enabled, optimizer_runs,
+        )
+    if _toggle(toggles, "aderyn", s.enable_aderyn):
+        await _run_tool(
+            scan_id, target_id, "aderyn", tool_outputs, workspace,
             have_source, main_source, tool_bytecode, solc_version,
             evm_version, optimizer_enabled, optimizer_runs,
         )
@@ -690,7 +741,12 @@ async def process_target(
 
     candidates = []
     detectors_run: list[str] = []
+    analyzer_findings_on = _toggle(toggles, "analyzer_findings", s.enable_analyzer_findings)
     for det in get_detectors(profile):
+        # Per-scan toggle for promoting native-analyzer (Slither/Mythril/Semgrep/Aderyn)
+        # findings to candidates.
+        if det.name == "analyzer_findings" and not analyzer_findings_on:
+            continue
         detectors_run.append(det.name)
         try:
             found = await asyncio.to_thread(det.run, ctx)
@@ -732,6 +788,7 @@ async def process_target(
         candidates,
         enable_liveness=_toggle(toggles, "sanity_liveness", s.enable_sanity_liveness),
         enable_binding_gate=_toggle(toggles, "binding_hard_gate", s.enable_binding_hard_gate),
+        enable_chain_gate=_toggle(toggles, "chain_liveness", s.enable_chain_liveness),
     )
     if sanity_suppressed:
         _log(scan_id, f"[{address}] sanity filter: suppressed {sanity_suppressed} obvious false-positive candidate(s)")
@@ -1162,6 +1219,7 @@ async def _run_tool(
     scan_id, target_id, tool, tool_outputs, workspace, have_source, main_source,
     bytecode, solc_version, evm_version=None, optimizer_enabled=None, optimizer_runs=None,
 ) -> None:
+    from ..runners.aderyn_runner import run_aderyn
     from ..runners.mythril_runner import run_mythril
     from ..runners.semgrep_runner import run_semgrep
     from ..runners.slither_runner import run_slither
@@ -1196,6 +1254,14 @@ async def _run_tool(
                 run_mythril, main_source, workspace["mythril"],
                 bytecode=bytecode, solc_version=solc_version, timeout=s.mythril_timeout,
             )
+        elif tool == "aderyn":
+            if not have_source:
+                res = _skip_runner(tool, "no source to scan")
+            else:
+                res = await asyncio.to_thread(
+                    run_aderyn, workspace["source"], workspace["base"] / "aderyn",
+                    timeout=s.aderyn_timeout,
+                )
         else:
             res = _skip_runner(tool, "unknown tool")
     except Exception as exc:

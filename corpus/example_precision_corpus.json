@@ -1,0 +1,18 @@
+[
+  {
+    "id": "example-l1-token-on-base",
+    "name": "An Ethereum-mainnet-only token address scanned on Base",
+    "chain": "base",
+    "address": "0x0000000000000000000000000000000000000000",
+    "label": "not_deployed",
+    "reason": "Replace with a real L1-only token address from your batch-130 set. It has no code on Base (eth_getCode == 0x), so ANY finding is a chain-misattribution false positive. The chain-attribution gate must suppress all findings here."
+  },
+  {
+    "id": "example-safe-verified-contract",
+    "name": "A verified, audited contract with no real bug",
+    "chain": "base",
+    "address": "0x0000000000000000000000000000000000000000",
+    "label": "safe",
+    "reason": "Replace with a real verified contract you have confirmed is clean. The tool must not produce a reportable (CONFIRMED_CRITICAL / LIKELY_CRITICAL_NEEDS_POC) finding here."
+  }
+]

@@ -35,6 +35,9 @@ class ScanToggles(BaseModel):
     binding_hard_gate: bool | None = None
     critical_value_gate: bool | None = None
     pattern_priors: bool | None = None
+    aderyn: bool | None = None
+    analyzer_findings: bool | None = None
+    chain_liveness: bool | None = None
 
 
 class TargetInput(BaseModel):

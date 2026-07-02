@@ -1,4 +1,5 @@
 import { NavLink } from 'react-router-dom'
+import ThemePicker from './ThemePicker'
 
 const NAV = [
   { to: '/', label: 'Dashboard', end: true },
@@ -46,8 +47,15 @@ export default function Sidebar() {
         ))}
       </nav>
 
+      <div className="px-3 py-3 border-t border-slate-800">
+        <div className="px-1 pb-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+          Theme
+        </div>
+        <ThemePicker />
+      </div>
+
       <div className="px-5 py-4 border-t border-slate-800 text-xs text-slate-600">
-        Local-only · :8000 backend
+        Local-only · :8791 backend
       </div>
     </aside>
   )

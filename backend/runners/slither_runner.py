@@ -51,6 +51,18 @@ def _normalize(results_json: dict) -> list[dict]:
         if elements:
             sm = elements[0].get("source_mapping") or {}
             location = f"{sm.get('filename_short', '')}:{sm.get('lines', '')}"
+        # Best-effort function name: a function-type element, else a node's parent.
+        function = ""
+        for el in elements:
+            if (el.get("type") or "") == "function" and el.get("name"):
+                function = el.get("name")
+                break
+        if not function:
+            for el in elements:
+                parent = (el.get("type_specific_fields") or {}).get("parent") or {}
+                if (parent.get("type") or "") == "function" and parent.get("name"):
+                    function = parent.get("name")
+                    break
         findings.append(
             {
                 "check": check,
@@ -58,6 +70,7 @@ def _normalize(results_json: dict) -> list[dict]:
                 "confidence": (d.get("confidence") or "").lower(),
                 "description": (d.get("description") or "").strip()[:2000],
                 "location": location,
+                "function": function,
                 "high_value": check in HIGH_VALUE_CHECKS,
             }
         )

@@ -41,6 +41,9 @@ export interface Toggles {
   sanity_liveness: boolean | null
   binding_hard_gate: boolean | null
   pattern_priors: boolean | null
+  aderyn: boolean | null
+  analyzer_findings: boolean | null
+  chain_liveness: boolean | null
 }
 
 export interface Scan {
