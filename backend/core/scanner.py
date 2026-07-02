@@ -741,7 +741,12 @@ async def process_target(
 
     candidates = []
     detectors_run: list[str] = []
+    analyzer_findings_on = _toggle(toggles, "analyzer_findings", s.enable_analyzer_findings)
     for det in get_detectors(profile):
+        # Per-scan toggle for promoting native-analyzer (Slither/Mythril/Semgrep/Aderyn)
+        # findings to candidates.
+        if det.name == "analyzer_findings" and not analyzer_findings_on:
+            continue
         detectors_run.append(det.name)
         try:
             found = await asyncio.to_thread(det.run, ctx)
